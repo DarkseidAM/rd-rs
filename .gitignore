@@ -2,3 +2,5 @@
 zurg_rs_plan.md
 config.toml
 data/
+.cursor/
+.cursorignore

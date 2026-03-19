@@ -201,3 +201,36 @@ pub struct ActiveTorrentCountResponse {
     #[serde(rename = "limit")]
     pub max_number_of_torrents: usize,
 }
+
+// ─── Traffic ──────────────────────────────────────────────────────────────────
+
+/// Response from `GET /rest/1.0/traffic/details`.
+/// It's a map of host -> TrafficHost.
+pub type TrafficDetailsResponse = std::collections::HashMap<String, TrafficHost>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrafficHost {
+    pub bytes: i64,
+    pub links: i64,
+    pub reset: i64,
+}
+
+// ─── Downloads ────────────────────────────────────────────────────────────────
+
+/// Entry from `GET /rest/1.0/downloads`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadItem {
+    pub id: String,
+    pub filename: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    pub filesize: i64,
+    pub link: String,
+    pub host: String,
+    pub host_icon: String,
+    pub chunks: i64,
+    pub download: String,
+    pub streamable: i32,
+    #[serde(deserialize_with = "deserialize_paris_time")]
+    pub generated: DateTime<Utc>,
+}

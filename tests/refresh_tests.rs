@@ -1,0 +1,70 @@
+//! Integration tests for refresh diff logic: added, removed, changed.
+
+use chrono::Utc;
+use dashmap::DashMap;
+use rd_rs::db::TorrentState;
+use rd_rs::rd::types::Torrent;
+use rd_rs::torrent::refresh::{DiffResult, diff};
+use rd_rs::torrent::{ManagedTorrent, access_key};
+use std::sync::Arc;
+
+fn make_torrent(id: &str, hash: &str, name: &str, progress: u8, status: &str) -> Torrent {
+    Torrent {
+        id: id.to_string(),
+        hash: hash.to_string(),
+        name: name.to_string(),
+        progress,
+        status: status.to_string(),
+        links: vec![],
+        added: Utc::now(),
+    }
+}
+
+fn make_managed(t: &Torrent, rd_ids: Vec<String>) -> Arc<ManagedTorrent> {
+    Arc::new(ManagedTorrent {
+        access_key: access_key(&t.hash, &t.name),
+        rd_ids,
+        torrent: t.clone(),
+        info: None,
+        state: TorrentState::Ok,
+        unrepairable_reason: None,
+    })
+}
+
+#[test]
+fn diff_added_removed_changed() {
+    let t1 = make_torrent("id1", "hash1", "A", 100, "downloaded");
+    let t2 = make_torrent("id2", "hash2", "B", 100, "downloaded");
+    let t3_updated = make_torrent("id3", "hash3", "C", 100, "downloaded");
+    let t3_old = make_torrent("id3", "hash3", "C", 50, "downloading");
+
+    let current = DashMap::new();
+    current.insert(
+        access_key("hash1", "A"),
+        make_managed(&t1, vec!["id1".into()]),
+    );
+    current.insert(
+        access_key("hash3", "C"),
+        make_managed(&t3_old, vec!["id3".into()]),
+    );
+    current.insert(
+        access_key("hash2", "B"),
+        make_managed(&t2, vec!["id2".into()]),
+    );
+
+    let fresh = vec![
+        t1.clone(),
+        t3_updated.clone(),
+        make_torrent("id4", "hash4", "D", 100, "downloaded"),
+    ];
+
+    let result: DiffResult = diff(&current, &fresh);
+
+    assert_eq!(result.added.len(), 1);
+    assert_eq!(result.added[0].0.id, "id4");
+    assert_eq!(result.removed_keys.len(), 1);
+    assert_eq!(result.removed_keys[0], "hash2/B");
+    assert_eq!(result.changed.len(), 1);
+    assert_eq!(result.changed[0].0.id, "id3");
+    assert_eq!(result.changed[0].0.progress, 100);
+}

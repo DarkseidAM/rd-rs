@@ -2,7 +2,7 @@
 name = "rd-rs"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.93"
 description = "Rust rewrite of zurg — Real-Debrid FUSE filesystem server"
 
 [lib]
@@ -22,8 +22,8 @@ tokio-util = "0.7"
 # reqwest 0.13: rustls feature (not rustls-tls), default-tls disabled, http2 kept
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "http2"] }
 
-# FUSE filesystem
-fuse3 = { version = "0.8", features = ["tokio-runtime", "unprivileged"] }
+# FUSE filesystem (patched: readdirplus buffer check includes padding to avoid EIO on large dirs)
+fuse3 = { version = "0.9", features = ["tokio-runtime", "unprivileged"] }
 
 # Config
 toml = "1"
@@ -62,3 +62,6 @@ libc = "0.2"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 tempfile = "3"
+
+[patch.crates-io]
+fuse3 = { path = "vendor/fuse3" }

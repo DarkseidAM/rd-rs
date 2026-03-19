@@ -8,6 +8,7 @@ fn parse_minimal_toml() {
     assert_eq!(cfg.token, "TESTTOKEN");
     assert_eq!(cfg.mount_path, PathBuf::from("/mnt/zurg"));
     assert_eq!(cfg.api.rate_limit_per_minute, 250);
+    assert_eq!(cfg.api.refresh_interval_secs, 15);
     assert_eq!(cfg.repair.every_mins, 60);
     assert_eq!(cfg.vfs.chunk_size, "4M");
 }
@@ -30,6 +31,7 @@ fn parse_full_toml() {
         [api]
         rate_limit_per_minute = 100
         timeout_secs = 30
+        refresh_interval_secs = 45
 
         [vfs]
         chunk_size = "8M"
@@ -39,6 +41,7 @@ fn parse_full_toml() {
     assert_eq!(cfg.download_tokens.len(), 2);
     assert_eq!(cfg.repair.every_mins, 30);
     assert_eq!(cfg.api.rate_limit_per_minute, 100);
+    assert_eq!(cfg.api.refresh_interval_secs, 45);
     assert_eq!(cfg.vfs.chunk_size, "8M");
     assert_eq!(cfg.vfs.max_parallel_streams, 4);
 }

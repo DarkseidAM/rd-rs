@@ -1,130 +1,27 @@
-//! SQLite state persistence — WAL mode, torrents + repair_jobs tables.
-//!
-//! Uses synchronous `rusqlite` (not async) opened once at startup.
-//! All writes are batched into a single transaction for performance at scale
-//! (20K torrents = 20K INSERT OR REPLACE ops in one BEGIN/COMMIT → <1s).
+//! Db connection and operations.
 
 use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
 
-// ─── State types ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TorrentState {
-    Ok,
-    Broken,
-    UnderRepair,
-}
-
-impl std::fmt::Display for TorrentState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ok => write!(f, "ok"),
-            Self::Broken => write!(f, "broken"),
-            Self::UnderRepair => write!(f, "under_repair"),
-        }
-    }
-}
-
-impl std::str::FromStr for TorrentState {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "ok" => Ok(Self::Ok),
-            "broken" => Ok(Self::Broken),
-            "under_repair" => Ok(Self::UnderRepair),
-            _ => anyhow::bail!("unknown torrent state: {s}"),
-        }
-    }
-}
-
-/// One row in the `torrents` table.
-#[derive(Debug, Clone)]
-pub struct TorrentRow {
-    /// Stable key: `hash + "_" + name` (matches Go access key).
-    pub access_key: String,
-    /// JSON array of RD torrent IDs (for multi-ID merge).
-    pub rd_ids: Vec<String>,
-    pub hash: String,
-    pub name: String,
-    pub state: TorrentState,
-    /// Reason why the torrent cannot be repaired (if applicable).
-    pub unrepairable_reason: Option<String>,
-    /// JSON map of `filename → state` for per-file broken tracking.
-    pub file_states: Option<String>,
-    pub last_seen_at: Option<i64>,
-    pub last_repaired_at: Option<i64>,
-}
-
-impl TorrentRow {
-    /// Helper to get the first RD ID or the access key if empty.
-    pub fn rd_ids_first_or_empty(&self, default: &str) -> String {
-        self.rd_ids
-            .first()
-            .cloned()
-            .unwrap_or_else(|| default.to_string())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RepairJobStatus {
-    Pending,
-    Running,
-    Done,
-    Failed,
-}
-
-impl std::fmt::Display for RepairJobStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Self::Pending => "pending",
-            Self::Running => "running",
-            Self::Done => "done",
-            Self::Failed => "failed",
-        };
-        write!(f, "{s}")
-    }
-}
-
-/// One row in the `repair_jobs` table.
-#[derive(Debug, Clone)]
-pub struct RepairJobRow {
-    pub id: String,
-    pub torrent_key: String,
-    pub strategy: String,
-    pub status: RepairJobStatus,
-    pub started_at: Option<i64>,
-    pub completed_at: Option<i64>,
-}
-
-// ─── Db ──────────────────────────────────────────────────────────────────────
+use super::types::{RepairJobRow, TorrentRow, TorrentState};
 
 /// Synchronous SQLite handle (WAL mode).
-///
-/// In Phase 2 this will be wrapped in `tokio_rusqlite::Connection` for
-/// async access from the TorrentManager refresh loop.
 pub struct Db {
     pub conn: tokio_rusqlite::Connection,
 }
 
 impl Db {
-    /// Open (or create) the SQLite database at `path` with WAL mode enabled.
     pub async fn open(path: &Path) -> Result<Self> {
-        // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating db dir: {}", parent.display()))?;
         }
 
-        // Connect to SQLite with tokio-rusqlite
         let conn = tokio_rusqlite::Connection::open(path).await?;
 
-        // Setup initial pragmas in WAL mode
         conn.call(|c| -> rusqlite::Result<()> {
             c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
             Ok::<(), rusqlite::Error>(())
@@ -134,7 +31,6 @@ impl Db {
         Ok(Self { conn })
     }
 
-    /// Open an in-memory database (for tests).
     pub async fn new_in_memory() -> Result<Self> {
         let conn = tokio_rusqlite::Connection::open_in_memory().await?;
         conn.call(|c| -> rusqlite::Result<()> {
@@ -145,7 +41,6 @@ impl Db {
         Ok(Self { conn })
     }
 
-    /// Create all tables and indexes if they don't exist.
     pub async fn init_schema(&self) -> Result<()> {
         self.conn
             .call(|conn| {
@@ -189,9 +84,6 @@ impl Db {
         Ok(())
     }
 
-    // ── Torrents ──────────────────────────────────────────────────────────────
-
-    /// Upsert a single torrent row.
     pub async fn upsert_torrent(&self, row: &TorrentRow) -> Result<()> {
         let rd_ids_json = serde_json::to_string(&row.rd_ids)?;
         let row_cloned = row.clone();
@@ -221,7 +113,6 @@ impl Db {
         Ok(())
     }
 
-    /// Sync version of `upsert_torrents_batch_conn` (used inside `conn.call()`).
     pub fn upsert_torrents_batch_conn(
         conn: &mut rusqlite::Connection,
         torrents: &[TorrentRow],
@@ -283,7 +174,6 @@ impl Db {
         })
     }
 
-    /// Load all torrent rows from the database.
     pub fn get_all_torrents_conn(
         conn: &rusqlite::Connection,
     ) -> Result<Vec<TorrentRow>, rusqlite::Error> {
@@ -295,7 +185,6 @@ impl Db {
         Ok(rows)
     }
 
-    /// Fetch all torrent rows from the database (async wrapper).
     pub async fn get_all_torrents(&self) -> Result<Vec<TorrentRow>> {
         let rows = self
             .conn
@@ -303,8 +192,6 @@ impl Db {
             .await?;
         Ok(rows)
     }
-
-    // ── Repair Jobs ───────────────────────────────────────────────────────────
 
     pub async fn insert_repair_job(&self, job: &RepairJobRow) -> Result<()> {
         let job_cloned = job.clone();
@@ -349,7 +236,6 @@ impl Db {
         Ok(())
     }
 
-    /// Count rows in an arbitrary table (useful for tests/metrics).
     pub async fn table_count(&self, table: &str) -> Result<i64> {
         let sql = format!("SELECT COUNT(1) FROM {}", table);
         let count: i64 = self

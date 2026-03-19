@@ -1,137 +1,127 @@
-//! Debounced on_library_update hook worker.
+//! Debounced on_library_update hook execution.
 //!
-//! Mirrors Go's `internal/torrent/hooks.go`:
-//! - 256-slot channel to buffer incoming path batches
-//! - 500ms debounce (collapses rapid consecutive changes into one firing)
-//! - Semaphore depth=1 (at most one script execution at a time)
-//! - Path deduplication before each execution
+//! Mirrors `hooks.go` logic: batches path changes and executes a shell command
+//! (e.g. `curl http://localhost:5000/webhook`) where `%s` is replaced with the changed path.
+//! A 500ms debounce ensures rapid refreshes don't spam the external system.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 
-const DEBOUNCE: Duration = Duration::from_millis(500);
+use crate::config::Config;
+use arc_swap::ArcSwap;
 
-// ─── Public API ────────────────────────────────────────────────────────────────
+const DEBOUNCE_WAIT: Duration = Duration::from_millis(500);
 
-/// Launch the hook worker as a background task.
-///
-/// Returns a `Sender` to enqueue path batches and a `CancellationToken` to
-/// gracefully shut the worker down.
-pub fn spawn_hook_worker(
-    command: String,
-    shutdown: CancellationToken,
-) -> mpsc::Sender<Vec<String>> {
-    let (tx, rx) = mpsc::channel::<Vec<String>>(256);
-    tokio::spawn(run_hook_worker(command, rx, shutdown));
-    tx
+pub struct HookWorker {
+    pub receiver: mpsc::Receiver<Vec<String>>,
+    pub config: Arc<ArcSwap<Config>>,
+    pub shutdown: CancellationToken,
 }
 
-// ─── Worker loop ──────────────────────────────────────────────────────────────
-
-async fn run_hook_worker(
-    command: String,
-    mut rx: mpsc::Receiver<Vec<String>>,
-    shutdown: CancellationToken,
-) {
-    if command.is_empty() {
-        // No hook configured — drain any messages silently.
-        loop {
-            tokio::select! {
-                _ = rx.recv() => {}
-                _ = shutdown.cancelled() => return,
-            }
+impl HookWorker {
+    /// Spawns the debounced webhook processing loop.
+    pub fn spawn(mut self) {
+        let command_template = self.config.load().on_library_update.command.clone();
+        if command_template.is_empty() {
+            // Disabled
+            return;
         }
-    }
 
-    tracing::debug!("Hook worker: started (command={:?})", command);
+        tokio::spawn(async move {
+            tracing::info!(
+                "HookWorker started: command='{}' debounce={:?}",
+                command_template,
+                DEBOUNCE_WAIT
+            );
 
-    let mut buffer: Vec<String> = Vec::new();
-    // When to fire (None = no pending batch)
-    let mut fire_at: Option<Instant> = None;
+            // One simultaneous hook execution at a time to prevent thundering herd.
+            let limiter = Arc::new(Semaphore::new(1));
+            let mut pending_paths: HashSet<String> = HashSet::new();
+            let mut flush_deadline: Option<Instant> = None;
 
-    loop {
-        // Build a sleep future (or a never-completing future if no deadline)
-        let deadline_future = async {
-            match fire_at {
-                Some(t) => sleep_until(t).await,
-                None => std::future::pending::<()>().await,
-            }
-        };
+            loop {
+                tokio::select! {
+                    _ = self.shutdown.cancelled() => {
+                        tracing::info!("HookWorker: shutting down");
+                        break;
+                    }
 
-        tokio::select! {
-            // New paths to buffer
-            Some(paths) = rx.recv() => {
-                buffer.extend(paths);
-                // Reset (or set) the debounce timer
-                fire_at = Some(Instant::now() + DEBOUNCE);
-            }
+                    // Flush timer expires
+                    _ = async {
+                        if let Some(deadline) = flush_deadline {
+                            sleep_until(deadline).await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    }, if flush_deadline.is_some() => {
+                        let paths_to_trigger: Vec<String> = pending_paths.drain().collect();
+                        flush_deadline = None;
 
-            // Debounce timer fired
-            _ = deadline_future, if fire_at.is_some() => {
-                let unique = dedup(&buffer);
-                buffer.clear();
-                fire_at = None;
-                execute_command(&command, &unique).await;
-            }
+                        if !paths_to_trigger.is_empty() {
+                            // Read current command on each flush (hot-reload)
+                            let cmd = self.config.load().on_library_update.command.clone();
+                            let limiter = limiter.clone();
 
-            // Graceful shutdown: flush whatever is in the buffer
-            _ = shutdown.cancelled() => {
-                if !buffer.is_empty() {
-                    let unique = dedup(&buffer);
-                    execute_command(&command, &unique).await;
+                            tokio::spawn(async move {
+                                let _permit = limiter.acquire().await;
+                                execute_hook(&cmd, paths_to_trigger).await;
+                            });
+                        }
+                    }
+
+                    // Receive paths from the manager
+                    msg = self.receiver.recv() => {
+                        match msg {
+                            Some(paths) => {
+                                for p in paths {
+                                    pending_paths.insert(p);
+                                }
+                                // Reset or start the debounce timer
+                                flush_deadline = Some(Instant::now() + DEBOUNCE_WAIT);
+                            }
+                            None => {
+                                // Channel closed
+                                break;
+                            }
+                        }
+                    }
                 }
-                tracing::debug!("Hook worker: stopped");
-                return;
             }
-        }
+        });
     }
 }
 
-// ─── Command execution ────────────────────────────────────────────────────────
-
-async fn execute_command(command: &str, paths: &[String]) {
-    if command.is_empty() || paths.is_empty() {
+async fn execute_hook(command_template: &str, paths: Vec<String>) {
+    // Mirror zurg: if no %s is provided, we just run the command once.
+    // If %s is provided, we run the command once PER path.
+    if !command_template.contains("%s") {
+        tracing::debug!("Executing on_library_update: {}", command_template);
+        if let Err(e) = launch_shell(command_template).await {
+            tracing::warn!("on_library_update failed: {}", e);
+        }
         return;
     }
 
-    tracing::debug!(
-        "Hook: firing on_library_update for {} path(s): {:?}",
-        paths.len(),
-        &paths[..paths.len().min(5)]
-    );
-
-    let result = Command::new("sh").arg("-c").arg(command).output().await;
-
-    match result {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            if !stdout.trim().is_empty() {
-                tracing::debug!("Hook output: {}", stdout.trim());
-            }
-        }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            tracing::warn!("Hook failed (exit={}): {}", out.status, stderr.trim());
-        }
-        Err(e) => {
-            tracing::error!("Hook execution error: {e}");
+    for path in paths {
+        let cmd = command_template.replace("%s", &path);
+        tracing::debug!("Executing on_library_update: {}", cmd);
+        if let Err(e) = launch_shell(&cmd).await {
+            tracing::warn!("on_library_update failed for {}: {}", path, e);
         }
     }
 }
 
-// ─── Path dedup ────────────────────────────────────────────────────────────────
-
-/// Remove duplicate and empty paths, preserving first-seen order.
-pub fn dedup(paths: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    paths
-        .iter()
-        .filter(|p| !p.is_empty() && seen.insert(p.as_str()))
-        .cloned()
-        .collect()
+async fn launch_shell(cmd: &str) -> std::io::Result<()> {
+    Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .status()
+        .await
+        .map(|_| ())
 }

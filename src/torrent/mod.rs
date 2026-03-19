@@ -20,6 +20,7 @@ use crate::db::TorrentState;
 use crate::rd::RealDebrid;
 use crate::rd::api::UnrestrictCache;
 use crate::rd::types::{Torrent, TorrentInfo};
+use arc_swap::ArcSwap;
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -81,14 +82,17 @@ pub struct TorrentManager {
     /// Async SQLite handle (from `tokio-rusqlite`).
     pub db: Arc<tokio_rusqlite::Connection>,
 
-    /// Active config (wrapped in `watch` so hot-reload reaches the refresh loop).
-    pub config: Arc<Config>,
+    /// Live config (ArcSwap for hot-reload; refresh loop and hook read current snapshot).
+    pub config: Arc<ArcSwap<Config>>,
 
     /// Unrestrict cache shared between TorrentManager and FUSE read().
     pub unrestrict_cache: UnrestrictCache,
 
     /// Channel to send path lists to the hook worker.
     pub(crate) hook_tx: mpsc::Sender<Vec<String>>,
+
+    /// Receiver for the hook worker (extracted once on start).
+    pub(crate) hook_rx: std::sync::Mutex<Option<mpsc::Receiver<Vec<String>>>>,
 
     /// CancellationToken — call `.cancel()` to stop all background tasks.
     pub(crate) shutdown: CancellationToken,
@@ -101,12 +105,12 @@ impl TorrentManager {
     pub async fn new(
         rd: Arc<RealDebrid>,
         db: Arc<tokio_rusqlite::Connection>,
-        config: Arc<Config>,
+        config: Arc<ArcSwap<Config>>,
     ) -> anyhow::Result<Self> {
         let torrents = Arc::new(DashMap::new());
         let unrestrict_cache = crate::rd::api::new_unrestrict_cache();
         let shutdown = CancellationToken::new();
-        let (hook_tx, _hook_rx) = mpsc::channel(256);
+        let (hook_tx, hook_rx) = mpsc::channel(256);
 
         let mgr = Self {
             torrents,
@@ -115,6 +119,7 @@ impl TorrentManager {
             config,
             unrestrict_cache,
             hook_tx,
+            hook_rx: std::sync::Mutex::new(Some(hook_rx)),
             shutdown,
         };
 
@@ -135,6 +140,28 @@ impl TorrentManager {
         tokio::spawn(async move {
             refresh::run_refresh_loop(mgr).await;
         });
+
+        // Premium status & Traffic monitoring
+        let mgr = self.clone();
+        tokio::spawn(async move {
+            refresh::run_premium_check_loop(mgr).await;
+        });
+
+        // Non-RD Downloads
+        let mgr = self.clone();
+        tokio::spawn(async move {
+            refresh::run_downloads_check_loop(mgr).await;
+        });
+
+        // on_library_update hook worker
+        if let Some(rx) = self.hook_rx.lock().unwrap().take() {
+            let worker = hook::HookWorker {
+                receiver: rx,
+                config: self.config.clone(),
+                shutdown: self.shutdown.clone(),
+            };
+            worker.spawn();
+        }
 
         tracing::info!("TorrentManager: background tasks started");
     }
@@ -164,9 +191,17 @@ impl TorrentManager {
                     added: chrono::Utc::now(),
                 },
                 info: None,
-                state: row.state,
-                unrepairable_reason: row.unrepairable_reason,
+                state: row.state.clone(),
+                unrepairable_reason: row.unrepairable_reason.clone(),
             };
+            if row.state == TorrentState::UnderRepair {
+                // In Phase 3, this will be pushed to the RepairManager queue.
+                tracing::warn!(
+                    "Startup: Torrent {} is under_repair (awaiting repair loop)",
+                    row.access_key
+                );
+            }
+
             self.torrents.insert(row.access_key, Arc::new(mt));
         }
 
