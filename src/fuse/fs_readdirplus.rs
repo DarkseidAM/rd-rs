@@ -136,7 +136,7 @@ pub(super) async fn readdirplus<'a>(
                     attr_ttl: ATTR_TTL,
                 },
             ];
-            for (fi, file) in mt.files().iter().enumerate() {
+            for (fi, file) in mt.selected_files().into_iter().enumerate() {
                 let fname = RdFs::sanitize_dirent_name(file.path.trim_start_matches('/'));
                 entries.push(DirectoryEntryPlus {
                     inode: RdFs::file_inode(slot, fi as u64),

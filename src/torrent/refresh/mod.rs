@@ -98,12 +98,12 @@ async fn run_once(mgr: &TorrentManager) -> anyhow::Result<()> {
     }
 
     if !errored_ids.is_empty() {
-        tracing::debug!(
-            "Refresh: found {} errored torrents, skipping them",
+        tracing::info!(
+            "Refresh: found {} errored/invalid torrents, skipping them",
             errored_ids.len()
         );
         for (id, name) in errored_ids {
-            tracing::warn!("Skipping errored torrent {} ({})", id, name);
+            tracing::debug!("Skipping errored torrent {} ({})", id, name);
         }
     }
 
@@ -111,6 +111,7 @@ async fn run_once(mgr: &TorrentManager) -> anyhow::Result<()> {
         added,
         removed_keys,
         changed,
+        duplicates,
     } = diff(&mgr.torrents, &fresh);
 
     if added.is_empty() && removed_keys.is_empty() && changed.is_empty() {
@@ -118,10 +119,11 @@ async fn run_once(mgr: &TorrentManager) -> anyhow::Result<()> {
     }
 
     tracing::info!(
-        "Refresh diff: +{} -{} ~{}",
+        "Refresh diff: +{} -{} ~{} (duplicates: {})",
         added.len(),
         removed_keys.len(),
-        changed.len()
+        changed.len(),
+        duplicates
     );
 
     let mut to_upsert: Vec<TorrentRow> = Vec::new();

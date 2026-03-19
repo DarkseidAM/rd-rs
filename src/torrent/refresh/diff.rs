@@ -12,6 +12,7 @@ pub struct DiffResult {
     pub added: Vec<(Torrent, Vec<String>)>,
     pub removed_keys: Vec<String>,
     pub changed: Vec<(Torrent, Vec<String>)>,
+    pub duplicates: usize,
 }
 
 /// Returns the calculated difference between current local state and fresh RD state.
@@ -66,10 +67,13 @@ pub fn diff(
         }
     }
 
+    let duplicates = fresh.len() - fresh_map.len();
+
     DiffResult {
         added,
         removed_keys: removed,
         changed,
+        duplicates,
     }
 }
 

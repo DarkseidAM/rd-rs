@@ -59,7 +59,7 @@ pub(super) async fn lookup(
             let Some(mt) = fs.ensure_torrent_info(&key).await else {
                 return Err(Errno::from(libc::ENOENT));
             };
-            for (fi, file) in mt.files().iter().enumerate() {
+            for (fi, file) in mt.selected_files().into_iter().enumerate() {
                 let fname = RdFs::sanitize_dirent_name(file.path.trim_start_matches('/'));
                 if fname.to_string_lossy() == name.as_ref() {
                     let mtime = RdFs::torrent_mtime(&mt);
@@ -109,7 +109,11 @@ pub(super) async fn getattr(
                 .ensure_torrent_info(&access_key)
                 .await
                 .ok_or(Errno::from(libc::ENOENT))?;
-            let file = mt.files().get(file_idx).ok_or(Errno::from(libc::ENOENT))?;
+            let file = mt
+                .selected_files()
+                .get(file_idx)
+                .copied()
+                .ok_or(Errno::from(libc::ENOENT))?;
             fs.file_attr(i, file.bytes.max(0) as u64, RdFs::torrent_mtime(&mt))
         }
 

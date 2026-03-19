@@ -107,7 +107,12 @@ async fn main() -> Result<()> {
         tracing::info!("Successfully unmounted stale FUSE directory");
     }
 
-    let fs = RdFs::new(torrent_mgr.torrents.clone(), rd_client, config);
+    let cache_dir = config.load().cache_dir.clone();
+    tracing::info!(cache_dir = %cache_dir.display(), "cache directory");
+    let cache =
+        rd_rs::cache::Cache::new(&cache_dir, std::sync::Arc::new(config.load().vfs.clone()));
+
+    let fs = RdFs::new(torrent_mgr.torrents.clone(), rd_client, config, cache);
     let mut mount_handle = Session::new(mount_options).mount(fs, &mount_path).await?;
 
     // Wait for shutdown signal or mount to exit

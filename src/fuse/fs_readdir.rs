@@ -98,7 +98,7 @@ pub(super) async fn readdir<'a>(
                 },
             ];
             let slot = i - INODE_TORRENT_BASE;
-            for (fi, file) in mt.files().iter().enumerate() {
+            for (fi, file) in mt.selected_files().into_iter().enumerate() {
                 let fname = RdFs::sanitize_dirent_name(file.path.trim_start_matches('/'));
                 entries.push(DirectoryEntry {
                     inode: RdFs::file_inode(slot, fi as u64),

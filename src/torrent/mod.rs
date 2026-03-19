@@ -60,6 +60,14 @@ impl ManagedTorrent {
             .map(|i| i.files.as_slice())
             .unwrap_or(&[])
     }
+
+    /// Returns only the selected files from the TorrentInfo.
+    pub fn selected_files(&self) -> Vec<&crate::rd::types::File> {
+        self.info
+            .as_ref()
+            .map(|i| i.files.iter().filter(|f| f.is_selected()).collect())
+            .unwrap_or_default()
+    }
 }
 
 /// Derive a stable access key from hash + name.

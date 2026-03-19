@@ -5,7 +5,7 @@
 //!   - `readdir` / `readdirplus` → root, `__all__` (by display name, dedup), torrent dirs (lazy TorrentInfo)
 //!   - `opendir`, `access`, `listxattr`, `getxattr` → implemented so kernel does not EIO
 //!   - `open` → stateless (fh 0, O_DIRECT)
-//!   - `read` → **stub, returns ENOSYS** (Phase 3: HTTP range + disk cache)
+//!   - `read` → **Phase 3: HTTP range + disk cache (implemented)**
 //!
 //! ## Checking FUSE methods (service running)
 //!
@@ -31,9 +31,11 @@ use dashmap::DashMap;
 use fuse3::raw::prelude::*;
 use fuse3::{Errno, Result as FuseResult};
 
+use crate::cache::Cache;
 use crate::config::Config;
 use crate::fuse::consts::{INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE};
 use crate::rd::RealDebrid;
+use crate::rd::api::{UnrestrictCache, new_unrestrict_cache};
 use crate::torrent::ManagedTorrent;
 use arc_swap::ArcSwap;
 
@@ -45,6 +47,8 @@ pub struct RdFs {
     pub torrents: Arc<DashMap<String, Arc<ManagedTorrent>>>,
     pub rd: Arc<RealDebrid>,
     pub config: Arc<ArcSwap<Config>>,
+    pub cache: Arc<Cache>,
+    pub(crate) unrestrict_cache: UnrestrictCache,
     pub(crate) key_to_inode: DashMap<String, u64>,
     pub(crate) inode_to_key: DashMap<u64, String>,
     pub(crate) next_torrent_inode: AtomicU64,
@@ -56,11 +60,14 @@ impl RdFs {
         torrents: Arc<DashMap<String, Arc<ManagedTorrent>>>,
         rd: Arc<RealDebrid>,
         config: Arc<ArcSwap<Config>>,
+        cache: Arc<Cache>,
     ) -> Self {
         Self {
             torrents,
             rd,
             config,
+            cache,
+            unrestrict_cache: new_unrestrict_cache(),
             key_to_inode: DashMap::new(),
             inode_to_key: DashMap::new(),
             next_torrent_inode: AtomicU64::new(INODE_TORRENT_BASE),
@@ -171,20 +178,18 @@ impl Filesystem for RdFs {
         if (flags & (libc::O_WRONLY as u32 | libc::O_RDWR as u32)) != 0 {
             return Err(Errno::from(libc::EACCES));
         }
-        Ok(ReplyOpen {
-            fh: 0,
-            flags: libc::O_DIRECT as u32,
-        })
+        Ok(ReplyOpen { fh: 0, flags: 0 })
     }
 
     async fn read(
         &self,
         _req: Request,
-        _inode: u64,
-        _fh: u64,
-        _offset: u64,
-        _size: u32,
+        inode: u64,
+        fh: u64,
+        offset: u64,
+        size: u32,
     ) -> FuseResult<ReplyData> {
-        Err(Errno::from(libc::ENOSYS))
+        let ctx = tokio_util::sync::CancellationToken::new();
+        super::read::read(self, inode, fh, offset, size, &self.unrestrict_cache, ctx).await
     }
 }

@@ -11,6 +11,7 @@ use crate::rd::types::Download;
 mod helpers;
 mod methods;
 mod methods2;
+mod methods3;
 
 pub use helpers::extract_base_download_url;
 

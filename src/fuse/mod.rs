@@ -20,6 +20,7 @@ mod fs_helpers;
 mod fs_lookup;
 mod fs_readdir;
 mod fs_readdirplus;
+pub(crate) mod read;
 
 pub use consts::{INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE};
 pub use fs::RdFs;
