@@ -61,7 +61,9 @@ libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
+tokio-util = "0.7"
 tempfile = "3"
+mockito = "1.7"
 
 [patch.crates-io]
 fuse3 = { path = "vendor/fuse3" }

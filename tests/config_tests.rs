@@ -11,6 +11,7 @@ fn parse_minimal_toml() {
     assert_eq!(cfg.api.refresh_interval_secs, 15);
     assert_eq!(cfg.repair.every_mins, 60);
     assert_eq!(cfg.vfs.chunk_size, "4M");
+    assert!(!cfg.vfs.recover_sparse_extents);
 }
 
 #[test]

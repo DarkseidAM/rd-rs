@@ -144,6 +144,11 @@ pub struct VfsConfig {
 
     #[serde(default = "defaults::default_parallel_streams")]
     pub max_parallel_streams: u32,
+
+    /// If true, rebuild `ByteRanges` from `lseek(SEEK_DATA)` on cache open. This can mark
+    /// allocated-but-zero disk blocks as cached and skip real HTTP fills (bad playback / retries).
+    #[serde(default = "defaults::default_recover_sparse_extents")]
+    pub recover_sparse_extents: bool,
 }
 
 impl Default for VfsConfig {
@@ -157,6 +162,7 @@ impl Default for VfsConfig {
             chunk_size: "4M".into(),
             read_wait: "5ms".into(),
             max_parallel_streams: 8,
+            recover_sparse_extents: false,
         }
     }
 }

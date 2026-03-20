@@ -102,7 +102,7 @@ impl Cache {
             file = %filename,
             "Streaming file from cache"
         );
-        let item = CacheItem::open_or_create(path, file_size)?;
+        let item = CacheItem::open_or_create(path, file_size, self.config.recover_sparse_extents)?;
         self.items.entry(key).or_insert_with(|| Arc::clone(&item));
         Ok(item)
     }

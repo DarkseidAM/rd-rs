@@ -13,6 +13,8 @@ impl RealDebrid {
     /// Uses `download_client` (the already-configured sub-client with its
     /// own rate-limiter and retry logic) so this shares the same
     /// connection pool and backoff machinery as `verify_link`.
+    ///
+    /// Caller must hold `connection_semaphore` (see cache worker); this method does not acquire it.
     pub async fn http_range_get(&self, url: &str, range: &str) -> Result<reqwest::Response> {
         let resp = self
             .download_client

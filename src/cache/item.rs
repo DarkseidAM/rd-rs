@@ -12,13 +12,13 @@ use anyhow::{Context, Result};
 use tokio::sync::Notify;
 
 use crate::cache::bitmap::ByteRanges;
-use crate::config::{Config, parse_byte_size};
+use crate::config::Config;
 use crate::rd::RealDebrid;
 use crate::rd::api::UnrestrictCache;
 use crate::rd::types::Download;
 
+use crate::cache::download_session::DownloadSession;
 use crate::cache::sparse::scan_sparse_file;
-use crate::cache::worker::{DownloaderArgs, run_downloader};
 
 // ─── CacheItem ────────────────────────────────────────────────────────────────
 
@@ -37,13 +37,17 @@ pub struct CacheItem {
     pub(crate) notify: Arc<Notify>,
     /// Bytes downloaded into this item (for global stats).
     pub(crate) downloaded_bytes: AtomicI64,
-    /// Active download tasks, tracking their real-time byte position.
-    pub(crate) active_workers: std::sync::Mutex<Vec<Arc<AtomicU64>>>,
+    /// Active download tasks (position + ref-count / abort handle).
+    pub(crate) active_workers: std::sync::Mutex<Vec<Arc<DownloadSession>>>,
 }
 
 impl CacheItem {
     /// Create or reopen the sparse file for this cache entry.
-    pub fn open_or_create(path: PathBuf, file_size: u64) -> Result<Arc<Self>> {
+    pub fn open_or_create(
+        path: PathBuf,
+        file_size: u64,
+        recover_sparse_extents: bool,
+    ) -> Result<Arc<Self>> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("create cache dir {:?}", parent))?;
         }
@@ -65,8 +69,12 @@ impl CacheItem {
                 .with_context(|| format!("truncate cache file {:?}", path))?;
         }
 
-        let ranges = scan_sparse_file(&file, file_size);
-        if !ranges.is_empty() {
+        let ranges = if recover_sparse_extents {
+            scan_sparse_file(&file, file_size)
+        } else {
+            ByteRanges::new()
+        };
+        if recover_sparse_extents && !ranges.is_empty() {
             let mb = ranges.total_bytes() as f64 / 1048576.0;
             tracing::info!(
                 "Recovered {:.2} MB of cached bytes from existing sparse file for {:?}",
@@ -124,6 +132,11 @@ impl CacheItem {
         self.ranges.read().unwrap().has_range(start, end)
     }
 
+    /// Sum of lengths of all cached byte intervals (for stats / tests).
+    pub fn total_cached_bytes(&self) -> u64 {
+        self.ranges.read().unwrap().total_bytes()
+    }
+
     /// Read directly from the sparse file. Caller must have already verified
     /// the range is present via `has_range`.
     pub fn read_from_file(&self, offset: u64, size: u32) -> Result<bytes::Bytes> {
@@ -165,8 +178,6 @@ impl CacheItem {
         Ok(())
     }
 
-    // ─── High-level read_at ───────────────────────────────────────────────────
-
     /// Serve `[offset, offset+size)` from cache, downloading if needed.
     ///
     /// Returns the bytes or an `RdError` that the FUSE layer uses to decide
@@ -182,138 +193,17 @@ impl CacheItem {
         unrestrict_cache: &UnrestrictCache,
         config: &Config,
     ) -> std::result::Result<bytes::Bytes, CacheReadError> {
-        let end = (offset + size as u64).min(self.file_size);
-        if offset >= self.file_size {
-            return Ok(bytes::Bytes::new());
-        }
-
-        // Fast path: already on disk.
-        if self.has_range(offset, end) {
-            return self
-                .read_from_file(offset, (end - offset) as u32)
-                .map_err(CacheReadError::Io);
-        }
-
-        // Deduplicate: if an active worker already covers `offset`, just wait.
-        let base_chunk = parse_byte_size(&config.vfs.chunk_size);
-        let read_ahead = parse_byte_size(&config.vfs.read_ahead);
-
-        let mut should_spawn = true;
-        let worker_pos = Arc::new(AtomicU64::new(offset));
-
-        {
-            let mut workers = self.active_workers.lock().unwrap();
-            for w in workers.iter() {
-                let pos = w.load(Ordering::Relaxed);
-                // If an active worker is currently downloading and is within
-                // 4MB behind the requested offset, wait for it instead of spawning.
-                if offset >= pos && offset.saturating_sub(pos) <= 4_194_304 {
-                    should_spawn = false;
-                    break;
-                }
-            }
-            if should_spawn {
-                workers.push(Arc::clone(&worker_pos));
-            }
-        }
-
-        let mut spawned_task = None;
-        if should_spawn {
-            let download_url = download.download.clone();
-            let rd_clone = Arc::clone(rd);
-            let item = Arc::clone(self);
-            let unrestrict_url = download.link.clone();
-            let unrestrict_cache = unrestrict_cache.clone();
-
-            spawned_task = Some(tokio::spawn(async move {
-                struct WorkerGuard {
-                    item: Arc<CacheItem>,
-                    pos: Arc<AtomicU64>,
-                }
-                impl Drop for WorkerGuard {
-                    fn drop(&mut self) {
-                        if let Ok(mut w) = self.item.active_workers.lock() {
-                            w.retain(|p| !Arc::ptr_eq(p, &self.pos));
-                        }
-                        self.item.notify.notify_waiters();
-                    }
-                }
-                let _guard = WorkerGuard {
-                    item: Arc::clone(&item),
-                    pos: Arc::clone(&worker_pos),
-                };
-
-                if let Err(e) = run_downloader(
-                    &item,
-                    DownloaderArgs {
-                        start: offset,
-                        end,
-                        base_chunk,
-                        read_ahead,
-                        download_url,
-                        unrestrict_url,
-                        rd: rd_clone,
-                        unrestrict_cache,
-                        worker_pos: Arc::clone(&worker_pos),
-                    },
-                )
-                .await
-                {
-                    tracing::warn!("cache downloader error at offset {offset}: {e:#}");
-                }
-            }));
-        }
-
-        // Inline wait loop — polls Notify until range on disk.
-        let wait_result: bool = tokio::select! {
-            _ = fuse_ctx.cancelled() => {
-                if let Some(task) = &spawned_task {
-                    // Only abort if WE spawned it.
-                    task.abort();
-                }
-                false
-            }
-            result = async {
-                // Fast path.
-                if self.has_range(offset, end) {
-                    return true;
-                }
-                loop {
-                    let notified = self.notify.notified();
-                    if self.has_range(offset, end) {
-                        return true;
-                    }
-                    if let Some(task) = &spawned_task {
-                        if task.is_finished() {
-                            return self.has_range(offset, end);
-                        }
-                    } else {
-                        // We are waiting on another worker. If it failed/died/skipped, we wake up here.
-                        let covered = {
-                            let w = self.active_workers.lock().unwrap();
-                            w.iter().any(|w_pos| {
-                                let pos = w_pos.load(Ordering::Relaxed);
-                                offset >= pos && offset.saturating_sub(pos) <= 4_194_304
-                            })
-                        };
-                        if !covered {
-                            // Start checking `has_range` first, because if they skipped it, we might fall through here.
-                            return self.has_range(offset, end);
-                        }
-                    }
-                    notified.await;
-                }
-            } => result
-        };
-
-        if wait_result {
-            self.read_from_file(offset, (end - offset) as u32)
-                .map_err(CacheReadError::Io)
-        } else if fuse_ctx.is_cancelled() {
-            Err(CacheReadError::Cancelled)
-        } else {
-            Err(CacheReadError::DownloadFailed)
-        }
+        crate::cache::item_read_at::read_at(
+            self,
+            fuse_ctx,
+            offset,
+            size,
+            download,
+            rd,
+            unrestrict_cache,
+            config,
+        )
+        .await
     }
 }
 

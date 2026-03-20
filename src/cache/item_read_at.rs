@@ -1,0 +1,143 @@
+//! `CacheItem::read_at` — download + wait with ref-counted downloader lifetime.
+
+use std::sync::Arc;
+
+use crate::cache::download_session::{DownloadSession, WaiterGuard};
+use crate::cache::item::{CacheItem, CacheReadError};
+use crate::cache::worker::{DownloaderArgs, run_downloader};
+use crate::config::{Config, parse_byte_size};
+use crate::rd::RealDebrid;
+use crate::rd::api::UnrestrictCache;
+use crate::rd::types::Download;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn read_at(
+    item: &Arc<CacheItem>,
+    fuse_ctx: tokio_util::sync::CancellationToken,
+    offset: u64,
+    size: u32,
+    download: &Download,
+    rd: &Arc<RealDebrid>,
+    unrestrict_cache: &UnrestrictCache,
+    config: &Config,
+) -> Result<bytes::Bytes, CacheReadError> {
+    let end = (offset + size as u64).min(item.file_size);
+    if offset >= item.file_size {
+        return Ok(bytes::Bytes::new());
+    }
+
+    if item.has_range(offset, end) {
+        return item
+            .read_from_file(offset, (end - offset) as u32)
+            .map_err(CacheReadError::Io);
+    }
+
+    let base_chunk = parse_byte_size(&config.vfs.chunk_size);
+    let read_ahead = parse_byte_size(&config.vfs.read_ahead);
+    let max_parallel_streams = config.vfs.max_parallel_streams;
+    let fetch_until = (end + read_ahead).min(item.file_size);
+
+    let (spawned_task, session) = {
+        let mut workers = item.active_workers.lock().unwrap();
+        let existing = workers
+            .iter()
+            .find(|s| s.covers_fuse_offset(offset))
+            .map(Arc::clone);
+        if let Some(s) = existing {
+            (None::<tokio::task::JoinHandle<()>>, s)
+        } else {
+            let session = Arc::new(DownloadSession::new(offset, fetch_until));
+            workers.push(Arc::clone(&session));
+            drop(workers);
+
+            let download_url = download.download.clone();
+            let rd_clone = Arc::clone(rd);
+            let item_clone = Arc::clone(item);
+            let unrestrict_url = download.link.clone();
+            let unrestrict_cache = unrestrict_cache.clone();
+            let session_for_guard = Arc::clone(&session);
+
+            let handle = tokio::spawn(async move {
+                struct WorkerGuard {
+                    item: Arc<CacheItem>,
+                    session: Arc<DownloadSession>,
+                }
+                impl Drop for WorkerGuard {
+                    fn drop(&mut self) {
+                        if let Ok(mut w) = self.item.active_workers.lock() {
+                            w.retain(|s| !Arc::ptr_eq(s, &self.session));
+                        }
+                        self.item.notify.notify_waiters();
+                    }
+                }
+                let _guard = WorkerGuard {
+                    item: Arc::clone(&item_clone),
+                    session: Arc::clone(&session_for_guard),
+                };
+
+                if let Err(e) = run_downloader(
+                    &item_clone,
+                    DownloaderArgs {
+                        start: offset,
+                        end,
+                        base_chunk,
+                        read_ahead,
+                        max_parallel_streams,
+                        download_url,
+                        unrestrict_url,
+                        rd: rd_clone,
+                        unrestrict_cache,
+                    },
+                )
+                .await
+                {
+                    tracing::warn!("cache downloader error at offset {offset}: {e:#}");
+                }
+            });
+            session.set_abort_handle(handle.abort_handle());
+            (Some(handle), session)
+        }
+    };
+
+    let _waiter = WaiterGuard::new(Arc::clone(&session));
+
+    let wait_result: bool = tokio::select! {
+        _ = fuse_ctx.cancelled() => false,
+        result = async {
+            if item.has_range(offset, end) {
+                return true;
+            }
+            loop {
+                let notified = item.notify.notified();
+                if item.has_range(offset, end) {
+                    return true;
+                }
+                if let Some(task) = &spawned_task {
+                    if task.is_finished() {
+                        return item.has_range(offset, end);
+                    }
+                } else {
+                    // Parallel chunk workers used to share one `pos`; it was not a contiguous
+                    // frontier. Only treat the downloader as gone when this session is unregistered.
+                    let still_registered = {
+                        let w = item.active_workers.lock().unwrap();
+                        w.iter().any(|s| Arc::ptr_eq(s, &session))
+                    };
+                    if !still_registered {
+                        return item.has_range(offset, end);
+                    }
+                }
+                notified.await;
+            }
+        } => result
+    };
+
+    if wait_result {
+        item.read_from_file(offset, (end - offset) as u32)
+            .map_err(CacheReadError::Io)
+    } else if fuse_ctx.is_cancelled() {
+        Err(CacheReadError::Cancelled)
+    } else {
+        Err(CacheReadError::DownloadFailed)
+    }
+}

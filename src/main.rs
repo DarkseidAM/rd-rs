@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
     };
 
     // Wait for the CDN latency test to complete before starting torrent refresh
-    let rd_client = rd_rs::rd::RealDebrid::new(&cfg).await?;
+    let rd_client = rd_rs::rd::RealDebrid::new(&cfg)?;
     tracing::info!("RealDebrid clients ready");
     rd_rs::rd::cdn::run_network_test(&rd_client, &cfg).await;
 

@@ -30,11 +30,26 @@ pub struct RealDebrid {
     pub unrestrict_client: Arc<RdClient>,
     pub download_client: Arc<RdClient>,
     pub torrents_rate_limiter: Arc<RateLimiter>,
+    /// Global cap on concurrent CDN calls on [`Self::download_client`] (chunk `Range` GETs and link verify).
+    pub connection_semaphore: Arc<tokio::sync::Semaphore>,
     pub config: Arc<Config>,
 }
 
 impl RealDebrid {
-    pub async fn new(cfg: &Config) -> Result<Self> {
+    pub fn new(cfg: &Config) -> Result<Self> {
+        Self::build(cfg, 30)
+    }
+
+    /// Like [`new`](Self::new), but sets the global CDN download connection semaphore
+    /// (production uses 30 to stay under RD’s ~32 connection cap).
+    pub fn new_with_connection_limit(
+        cfg: &Config,
+        max_concurrent_download_connections: usize,
+    ) -> Result<Self> {
+        Self::build(cfg, max_concurrent_download_connections)
+    }
+
+    fn build(cfg: &Config, connection_semaphore_permits: usize) -> Result<Self> {
         let api_rl = RateLimiter::new(cfg.api.rate_limit_per_minute);
         let torrents_rl = RateLimiter::new(cfg.api.torrents_rate_limit_per_minute);
         let timeout = Duration::from_secs(cfg.api.timeout_secs);
@@ -76,7 +91,8 @@ impl RealDebrid {
 
         // ── download_client: HTTP/1.1, unauthenticated ─────────────────────
         // Disable HTTP/2: RD .com CDN servers only support HTTP/1.1.
-        // 32 connections per host cap for streaming performance.
+        // `pool_max_idle_per_host` is only the idle connection cache for this Client;
+        // concurrent CDN usage is capped by `connection_semaphore` (see worker + verify).
         let download_http = ClientBuilder::new()
             .http1_only()
             .pool_max_idle_per_host(32)
@@ -93,11 +109,15 @@ impl RealDebrid {
             },
         ));
 
+        let permits = connection_semaphore_permits.max(1);
+        let connection_semaphore = Arc::new(tokio::sync::Semaphore::new(permits));
+
         Ok(Self {
             api_client,
             unrestrict_client,
             download_client,
             torrents_rate_limiter: torrents_rl,
+            connection_semaphore,
             config: Arc::new(cfg.clone()),
         })
     }

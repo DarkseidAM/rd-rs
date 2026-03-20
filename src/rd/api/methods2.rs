@@ -142,6 +142,11 @@ impl RealDebrid {
     }
 
     async fn verify_head(&self, url: &str) -> Result<()> {
+        let _permit = self
+            .connection_semaphore
+            .acquire()
+            .await
+            .context("verify_head: connection semaphore closed")?;
         let resp = self
             .download_client
             .execute(|| self.download_client.client.head(url))
@@ -156,6 +161,11 @@ impl RealDebrid {
     }
 
     async fn verify_range(&self, url: &str) -> Result<()> {
+        let _permit = self
+            .connection_semaphore
+            .acquire()
+            .await
+            .context("verify_range: connection semaphore closed")?;
         let resp = self
             .download_client
             .execute(|| {
