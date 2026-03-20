@@ -8,11 +8,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use std::os::unix::io::AsRawFd;
-
 use anyhow::{Context, Result};
 use tokio::sync::Notify;
-use tokio::time::{self, Duration};
 
 use crate::cache::bitmap::ByteRanges;
 use crate::config::{Config, parse_byte_size};
@@ -20,35 +17,8 @@ use crate::rd::RealDebrid;
 use crate::rd::api::UnrestrictCache;
 use crate::rd::types::Download;
 
-// ─── Constants (from decypharr afddc46) ──────────────────────────────────────
-
-/// Adaptive chunk size cap: never grow beyond 16× the base chunk.
-const MAX_CHUNK_MULTIPLIER: u64 = 16;
-/// If no bytes are written to cache for this duration, cancel the in-flight
-/// HTTP stream attempt and retry from the same offset.
-const NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(45);
-/// How often the no-progress watchdog polls for stall detection.
-const NO_PROGRESS_CHECK: Duration = Duration::from_secs(1);
-/// Idle items are evictable after 1 minute with no open handles.
-pub(crate) const ITEM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-/// Max retries before giving up and returning an error to FUSE.
-const MAX_DOWNLOAD_RETRIES: u32 = 3;
-
-// ─── DownloaderArgs ──────────────────────────────────────────────────────────
-
-/// Arguments for `run_downloader`, grouped to stay under clippy's arg-count limit.
-pub(crate) struct DownloaderArgs {
-    pub start: u64,
-    pub end: u64,
-    pub base_chunk: u64,
-    pub read_ahead: u64,
-    pub download_url: String,
-    #[allow(dead_code)]
-    pub unrestrict_url: String,
-    pub rd: Arc<RealDebrid>,
-    #[allow(dead_code)]
-    pub unrestrict_cache: UnrestrictCache,
-}
+use crate::cache::sparse::scan_sparse_file;
+use crate::cache::worker::{DownloaderArgs, run_downloader};
 
 // ─── CacheItem ────────────────────────────────────────────────────────────────
 
@@ -67,8 +37,8 @@ pub struct CacheItem {
     pub(crate) notify: Arc<Notify>,
     /// Bytes downloaded into this item (for global stats).
     pub(crate) downloaded_bytes: AtomicI64,
-    /// Active download tasks (to prevent duplicate background streams).
-    pub(crate) active_workers: std::sync::Mutex<Vec<std::ops::Range<u64>>>,
+    /// Active download tasks, tracking their real-time byte position.
+    pub(crate) active_workers: std::sync::Mutex<Vec<Arc<AtomicU64>>>,
 }
 
 impl CacheItem {
@@ -227,15 +197,23 @@ impl CacheItem {
         // Deduplicate: if an active worker already covers `offset`, just wait.
         let base_chunk = parse_byte_size(&config.vfs.chunk_size);
         let read_ahead = parse_byte_size(&config.vfs.read_ahead);
-        let target_end = (end + read_ahead).min(self.file_size);
 
-        let mut should_spawn = false;
+        let mut should_spawn = true;
+        let worker_pos = Arc::new(AtomicU64::new(offset));
+
         {
             let mut workers = self.active_workers.lock().unwrap();
-            let covered = workers.iter().any(|r| r.start <= offset && r.end > offset);
-            if !covered {
-                workers.push(offset..target_end);
-                should_spawn = true;
+            for w in workers.iter() {
+                let pos = w.load(Ordering::Relaxed);
+                // If an active worker is currently downloading and is within
+                // 4MB behind the requested offset, wait for it instead of spawning.
+                if offset >= pos && offset.saturating_sub(pos) <= 4_194_304 {
+                    should_spawn = false;
+                    break;
+                }
+            }
+            if should_spawn {
+                workers.push(Arc::clone(&worker_pos));
             }
         }
 
@@ -250,23 +228,24 @@ impl CacheItem {
             spawned_task = Some(tokio::spawn(async move {
                 struct WorkerGuard {
                     item: Arc<CacheItem>,
-                    range: std::ops::Range<u64>,
+                    pos: Arc<AtomicU64>,
                 }
                 impl Drop for WorkerGuard {
                     fn drop(&mut self) {
                         if let Ok(mut w) = self.item.active_workers.lock() {
-                            w.retain(|r| r != &self.range);
+                            w.retain(|p| !Arc::ptr_eq(p, &self.pos));
                         }
                         self.item.notify.notify_waiters();
                     }
                 }
                 let _guard = WorkerGuard {
                     item: Arc::clone(&item),
-                    range: offset..target_end,
+                    pos: Arc::clone(&worker_pos),
                 };
 
-                if let Err(e) = item
-                    .run_downloader(DownloaderArgs {
+                if let Err(e) = run_downloader(
+                    &item,
+                    DownloaderArgs {
                         start: offset,
                         end,
                         base_chunk,
@@ -275,8 +254,10 @@ impl CacheItem {
                         unrestrict_url,
                         rd: rd_clone,
                         unrestrict_cache,
-                    })
-                    .await
+                        worker_pos: Arc::clone(&worker_pos),
+                    },
+                )
+                .await
                 {
                     tracing::warn!("cache downloader error at offset {offset}: {e:#}");
                 }
@@ -307,12 +288,16 @@ impl CacheItem {
                             return self.has_range(offset, end);
                         }
                     } else {
-                        // We are waiting on another worker. If it failed/died, we wake up here.
+                        // We are waiting on another worker. If it failed/died/skipped, we wake up here.
                         let covered = {
                             let w = self.active_workers.lock().unwrap();
-                            w.iter().any(|r| r.start <= offset && r.end > offset)
+                            w.iter().any(|w_pos| {
+                                let pos = w_pos.load(Ordering::Relaxed);
+                                offset >= pos && offset.saturating_sub(pos) <= 4_194_304
+                            })
                         };
                         if !covered {
+                            // Start checking `has_range` first, because if they skipped it, we might fall through here.
                             return self.has_range(offset, end);
                         }
                     }
@@ -330,170 +315,6 @@ impl CacheItem {
             Err(CacheReadError::DownloadFailed)
         }
     }
-
-    // ─── Downloader ───────────────────────────────────────────────────────────
-
-    /// HTTP Range GET loop for `[start, file_end)` with read-ahead and
-    /// no-progress watchdog. Mirrors decypharr's downloader pattern.
-    async fn run_downloader(self: &Arc<Self>, args: DownloaderArgs) -> Result<()> {
-        let DownloaderArgs {
-            start,
-            end,
-            base_chunk,
-            read_ahead,
-            download_url,
-            rd,
-            ..
-        } = args;
-        let mut current_chunk = base_chunk;
-        let max_chunk = base_chunk * MAX_CHUNK_MULTIPLIER;
-
-        // Apply read-ahead: download further than strictly needed.
-        let target_end = (end + read_ahead).min(self.file_size);
-
-        let mut pos = {
-            // Start from the first missing byte in [start, target_end).
-            let r = self.ranges.read().unwrap();
-            r.find_missing(start, target_end)
-                .map(|(s, _)| s)
-                .unwrap_or(target_end)
-        };
-
-        let mut retries: u32 = 0;
-
-        while pos < target_end {
-            // Resolve the next missing sub-range.
-            let (miss_start, _miss_end) = {
-                let r = self.ranges.read().unwrap();
-                match r.find_missing(pos, target_end) {
-                    Some(m) => m,
-                    None => break, // fully cached up to target_end
-                }
-            };
-            pos = miss_start;
-
-            let chunk_end = (pos + current_chunk).min(target_end);
-            let range_header = format!("bytes={}-{}", pos, chunk_end - 1);
-
-            // --- No-progress watchdog ---
-            let last_progress = Arc::new(std::sync::atomic::AtomicI64::new(
-                chrono::Utc::now().timestamp_millis(),
-            ));
-            let lp_clone = Arc::clone(&last_progress);
-            let (watchdog_tx, mut watchdog_rx) = tokio::sync::oneshot::channel::<()>();
-
-            let watchdog = tokio::spawn(async move {
-                let mut interval = time::interval(NO_PROGRESS_CHECK);
-                loop {
-                    interval.tick().await;
-                    if watchdog_tx.is_closed() {
-                        return;
-                    }
-                    let last = lp_clone.load(Ordering::Relaxed);
-                    let now = chrono::Utc::now().timestamp_millis();
-                    if (now - last) as u64 >= NO_PROGRESS_TIMEOUT.as_millis() as u64 {
-                        tracing::warn!("no-progress watchdog fired after 45s stall");
-                        let _ = watchdog_tx;
-                        return;
-                    }
-                }
-            });
-
-            // Start the request, bounded by watchdog
-            last_progress.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
-            let mut resp = tokio::select! {
-                res = rd.http_range_get(&download_url, &range_header) => {
-                    match res {
-                        Ok(r) => r,
-                        Err(e) => {
-                            watchdog.abort();
-                            tracing::warn!("HTTP range GET failed at byte {pos}: {e:#}");
-                            current_chunk = base_chunk;
-                            retries += 1;
-                            if retries >= MAX_DOWNLOAD_RETRIES {
-                                return Err(e);
-                            }
-                            continue;
-                        }
-                    }
-                }
-                _ = &mut watchdog_rx => {
-                    watchdog.abort();
-                    tracing::warn!("stream headers stalled for 45s");
-                    current_chunk = base_chunk;
-                    retries += 1;
-                    if retries >= MAX_DOWNLOAD_RETRIES {
-                        return Err(anyhow::anyhow!("stream stalled: no progress for 45s"));
-                    }
-                    continue;
-                }
-            };
-
-            let mut chunk_bytes_downloaded = 0u64;
-            let mut download_error = None;
-
-            loop {
-                let chunk_res = tokio::select! {
-                    res = resp.chunk() => res,
-                    _ = &mut watchdog_rx => {
-                        download_error = Some(anyhow::anyhow!("stream body stalled for 45s"));
-                        break;
-                    }
-                };
-
-                match chunk_res {
-                    Ok(Some(data)) => {
-                        last_progress
-                            .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
-                        if let Err(e) = self.write_range(pos, &data[..]) {
-                            download_error = Some(e);
-                            break;
-                        }
-                        pos += data.len() as u64;
-                        chunk_bytes_downloaded += data.len() as u64;
-                    }
-                    Ok(None) => break, // Success, EOF for this chunk
-                    Err(e) => {
-                        download_error = Some(anyhow::anyhow!("HTTP chunk error: {e:#}"));
-                        break;
-                    }
-                }
-            }
-
-            watchdog.abort();
-
-            match download_error {
-                None => {
-                    let c_mb = format!("{:.2} MB", current_chunk as f64 / 1048576.0);
-                    let b_mb = format!("{:.2} MB", chunk_bytes_downloaded as f64 / 1048576.0);
-                    let o_bytes = pos.saturating_sub(chunk_bytes_downloaded);
-                    let o_mb = format!("{:.2} MB", o_bytes as f64 / 1048576.0);
-
-                    tracing::info!(
-                        file = %self.path.file_name().unwrap_or_default().to_string_lossy(),
-                        chunk = %format!("{} ({})", current_chunk, c_mb),
-                        bytes = %format!("{} ({})", chunk_bytes_downloaded, b_mb),
-                        offset = %format!("{} ({})", o_bytes, o_mb),
-                        "chunk downloaded successfully"
-                    );
-                    current_chunk = (current_chunk * 2).min(max_chunk);
-
-                    retries = 0;
-                }
-                Some(e) => {
-                    tracing::warn!("HTTP streaming failed at byte {pos}: {e:#}");
-                    current_chunk = base_chunk;
-                    retries += 1;
-                    if retries >= MAX_DOWNLOAD_RETRIES {
-                        return Err(e);
-                    }
-                    time::sleep(Duration::from_secs(retries as u64 * 2)).await;
-                }
-            }
-        }
-
-        Ok(())
-    }
 }
 
 // ─── CacheReadError ───────────────────────────────────────────────────────────
@@ -506,45 +327,4 @@ pub enum CacheReadError {
     DownloadFailed,
     #[error("FUSE request cancelled")]
     Cancelled,
-}
-
-// ─── Native Sparse File Extent Scanner ────────────────────────────────────────
-
-/// Scans mapped extents of an existing sparse file to reconstruct its ByteRanges.
-fn scan_sparse_file(file: &std::fs::File, file_size: u64) -> ByteRanges {
-    let mut ranges = ByteRanges::new();
-    let fd = file.as_raw_fd();
-    let mut offset: i64 = 0;
-    let end = file_size as i64;
-
-    while offset < end {
-        // Find next data segment
-        let data_start = unsafe { libc::lseek(fd, offset, libc::SEEK_DATA) };
-        if data_start < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::ENXIO) {
-                // No more data segments.
-                break;
-            }
-            tracing::warn!("lseek(SEEK_DATA) failed: {err}");
-            break;
-        }
-
-        // Find next hole after this data segment
-        let hole_start = unsafe { libc::lseek(fd, data_start, libc::SEEK_HOLE) };
-        if hole_start < 0 {
-            tracing::warn!(
-                "lseek(SEEK_HOLE) failed: {}",
-                std::io::Error::last_os_error()
-            );
-            break;
-        }
-
-        let slice_end = hole_start.min(end);
-        ranges.insert(data_start as u64, slice_end as u64);
-
-        offset = slice_end;
-    }
-
-    ranges
 }

@@ -9,6 +9,8 @@ pub mod bitmap;
 #[allow(clippy::module_inception)]
 pub mod cache;
 pub mod item;
+pub(crate) mod sparse;
+pub(crate) mod worker;
 
 pub use cache::Cache;
 pub use item::{CacheItem, CacheReadError};

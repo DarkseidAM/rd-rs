@@ -24,6 +24,11 @@ pub async fn run_premium_check_loop(mgr: Arc<TorrentManager>) {
                         "RD account premium expires in less than 3 days ({}s)!",
                         user.premium
                     );
+                } else {
+                    tracing::info!(
+                        "RD account is premium ({} days remaining)",
+                        user.premium / 86400
+                    );
                 }
             }
             Err(e) => tracing::warn!("Premium check: failed to fetch user state: {e:#}"),

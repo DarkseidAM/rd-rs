@@ -5,6 +5,7 @@
 //! - Periodic eviction (LRU + age + free-space guard)
 //! - Aggregate stats (hits, misses, download speed)
 
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
@@ -13,7 +14,10 @@ use std::time::Duration;
 use dashmap::DashMap;
 use tokio::time;
 
-use crate::cache::item::{CacheItem, ITEM_IDLE_TIMEOUT};
+use crate::cache::item::CacheItem;
+
+/// Idle items are evictable after 1 minute with no open handles.
+const ITEM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 use crate::config::{VfsConfig, parse_byte_size};
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -192,7 +196,7 @@ impl Cache {
         self.check_free_space();
     }
 
-    fn evict_disk_lru(&self, threshold: u64, _now_secs: u64) {
+    pub fn evict_disk_lru(&self, threshold: u64, now_secs: u64) {
         // Scan cache_dir for data files, collect (atime, path, size).
         let Ok(top) = std::fs::read_dir(&self.cache_dir) else {
             return;
@@ -211,7 +215,7 @@ impl Cache {
                     continue; // skip .json sidecar files if any
                 }
                 if let Ok(meta) = path.metadata() {
-                    let size = meta.len();
+                    let size = meta.blocks() * 512;
                     let atime = meta
                         .accessed()
                         .ok()
@@ -232,13 +236,17 @@ impl Cache {
         candidates.sort_by_key(|(atime, _, _)| *atime);
 
         let mut freed: u64 = 0;
-        for (_, path, size) in candidates {
+        for (atime, path, size) in candidates {
             if total - freed <= threshold {
                 break;
             }
             // Don't evict files that are currently open in the items map.
             let key = path_to_key(&self.cache_dir, &path);
             if self.items.contains_key(&key) {
+                continue;
+            }
+            // Grace period: do not delete files accessed within the last 5 minutes.
+            if now_secs.saturating_sub(atime) < 300 {
                 continue;
             }
             if std::fs::remove_file(&path).is_ok() {
