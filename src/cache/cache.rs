@@ -273,7 +273,7 @@ impl Cache {
             if let Ok(path_cstr) = CString::new(self.cache_dir.to_string_lossy().as_bytes()) {
                 let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
                 if unsafe { libc::statvfs(path_cstr.as_ptr(), &mut stat) } == 0 {
-                    let free_bytes = stat.f_bavail * stat.f_bsize as u64;
+                    let free_bytes = stat.f_bavail * stat.f_bsize;
                     if free_bytes < min_free {
                         tracing::warn!(
                             free_gb = free_bytes / 1_073_741_824,
