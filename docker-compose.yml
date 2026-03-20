@@ -1,0 +1,14 @@
+# FUSE in Docker needs elevated privileges; adjust paths and use a real token in config.toml.
+services:
+  rd-rs:
+    build: .
+    image: rd-rs:local
+    privileged: true
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - rd-cache:/data/cache
+      - ./mnt:/mnt/rd
+    restart: unless-stopped
+
+volumes:
+  rd-cache:

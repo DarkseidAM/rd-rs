@@ -1,0 +1,15 @@
+target/
+.git/
+.github/
+.idea/
+.vscode/
+*.md
+.gitignore
+.dockerignore
+docker-compose.yml
+tests/
+.env
+.env.*
+data/
+# Local secrets — image ships config.example.toml as default only
+config.toml

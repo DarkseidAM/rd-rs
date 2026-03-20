@@ -1,0 +1,7 @@
+# Example config for Docker — copy to `config.toml` or bind-mount your own at /app/config.toml
+token = "YOUR_REAL_DEBRID_TOKEN"
+mount_path = "/mnt/rd"
+cache_dir = "/data/cache"
+
+[vfs]
+max_parallel_streams = 8
