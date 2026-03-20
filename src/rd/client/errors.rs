@@ -54,6 +54,9 @@ pub enum DownloadError {
     FileUnavailable,
     #[error("bytes_limit_reached")]
     BytesLimitReached,
+    /// CDN responded 401/403/404 — link often expired; refresh via `POST /unrestrict/link`.
+    #[error("cdn link unavailable (HTTP {status})")]
+    LinkUnavailable { status: u16 },
     #[error("server error (status={0})")]
     ServerError(u16),
     #[error("download error: {0}")]
@@ -69,8 +72,21 @@ impl DownloadError {
             "file_unavailable" => Self::FileUnavailable,
             "bytes_limit_reached" => Self::BytesLimitReached,
             _ if (500..=599).contains(&status) => Self::ServerError(status),
+            _ if matches!(status, 401 | 403 | 404) => Self::LinkUnavailable { status },
             _ => Self::Other(msg.to_string()),
         }
+    }
+
+    /// True when a fresh unrestricted CDN URL may fix the failure.
+    pub fn should_refresh_via_unrestrict(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidDownloadCode
+                | Self::FailedGeneration
+                | Self::TooManyAttempts
+                | Self::FileUnavailable
+                | Self::LinkUnavailable { .. }
+        )
     }
 }
 
@@ -86,4 +102,11 @@ pub enum RdError {
     Cancelled,
     #[error("max retries exceeded")]
     MaxRetriesExceeded,
+}
+
+impl RdError {
+    /// CDN Range GET failed in a way that may recover after `POST /unrestrict/link`.
+    pub fn should_refresh_via_unrestrict(&self) -> bool {
+        matches!(self, Self::Download(d) if d.should_refresh_via_unrestrict())
+    }
 }

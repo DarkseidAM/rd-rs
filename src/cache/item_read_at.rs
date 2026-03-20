@@ -1,14 +1,17 @@
 //! `CacheItem::read_at` — download + wait with ref-counted downloader lifetime.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use crate::cache::download_session::{DownloadSession, WaiterGuard};
 use crate::cache::item::{CacheItem, CacheReadError};
+use crate::cache::link_heal::MAX_SESSION_LINK_HEALS;
 use crate::cache::worker::{DownloaderArgs, run_downloader};
 use crate::config::{Config, parse_byte_size};
 use crate::rd::RealDebrid;
 use crate::rd::api::UnrestrictCache;
 use crate::rd::types::Download;
+use tokio::sync::{Mutex, RwLock};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_at(
@@ -50,11 +53,13 @@ pub(crate) async fn read_at(
             workers.push(Arc::clone(&session));
             drop(workers);
 
-            let download_url = download.download.clone();
+            let live_download_url = Arc::new(RwLock::new(download.download.clone()));
+            let link_refresh_lock = Arc::new(Mutex::new(()));
+            let heal_remaining = Arc::new(AtomicU32::new(MAX_SESSION_LINK_HEALS));
             let rd_clone = Arc::clone(rd);
             let item_clone = Arc::clone(item);
-            let unrestrict_url = download.link.clone();
-            let unrestrict_cache = unrestrict_cache.clone();
+            let source_link = download.link.clone();
+            let unc = unrestrict_cache.clone();
             let session_for_guard = Arc::clone(&session);
 
             let handle = tokio::spawn(async move {
@@ -83,10 +88,12 @@ pub(crate) async fn read_at(
                         base_chunk,
                         read_ahead,
                         max_parallel_streams,
-                        download_url,
-                        unrestrict_url,
+                        live_download_url: Arc::clone(&live_download_url),
+                        source_link,
                         rd: rd_clone,
-                        unrestrict_cache,
+                        unrestrict_cache: unc,
+                        link_refresh_lock: Arc::clone(&link_refresh_lock),
+                        heal_remaining: Arc::clone(&heal_remaining),
                     },
                 )
                 .await

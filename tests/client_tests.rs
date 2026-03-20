@@ -38,4 +38,11 @@ fn download_error_from_header() {
 
     let e2 = DownloadError::from_header("", 503);
     assert!(matches!(e2, DownloadError::ServerError(503)));
+
+    let e404 = DownloadError::from_header("", 404);
+    assert!(matches!(
+        e404,
+        DownloadError::LinkUnavailable { status: 404 }
+    ));
+    assert!(e404.should_refresh_via_unrestrict());
 }

@@ -1,9 +1,11 @@
 use crate::cache::item::CacheItem;
+use crate::cache::link_heal;
 use crate::rd::RealDebrid;
 use crate::rd::api::UnrestrictCache;
 use anyhow::Result;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::{self, Duration};
 
 /// If no bytes are written to cache for this duration, cancel the in-flight
@@ -21,12 +23,14 @@ pub(crate) struct DownloaderArgs {
     pub base_chunk: u64,
     pub read_ahead: u64,
     pub max_parallel_streams: u32,
-    pub download_url: String,
-    #[allow(dead_code)]
-    pub unrestrict_url: String,
+    /// Current CDN URL; updated when link auto-heal succeeds.
+    pub live_download_url: Arc<RwLock<String>>,
+    /// Original RD link for `POST /unrestrict/link`.
+    pub source_link: String,
     pub rd: Arc<RealDebrid>,
-    #[allow(dead_code)]
     pub unrestrict_cache: UnrestrictCache,
+    pub link_refresh_lock: Arc<Mutex<()>>,
+    pub heal_remaining: Arc<AtomicU32>,
 }
 
 /// HTTP Range GET pool for `[start, file_end)` using concurrent connection chunking
@@ -38,9 +42,12 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
         base_chunk,
         read_ahead,
         max_parallel_streams,
-        download_url,
+        live_download_url,
+        source_link,
         rd,
-        ..
+        unrestrict_cache,
+        link_refresh_lock,
+        heal_remaining,
     } = args;
 
     // Apply read-ahead: download further than strictly needed.
@@ -79,7 +86,11 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
     for _ in 0..num_workers {
         let queue_clone = Arc::clone(&queue);
         let rd_clone = Arc::clone(&rd);
-        let url_clone = download_url.clone();
+        let live_url = Arc::clone(&live_download_url);
+        let source_link = source_link.clone();
+        let unc = unrestrict_cache.clone();
+        let refresh_lock = Arc::clone(&link_refresh_lock);
+        let heal_rem = Arc::clone(&heal_remaining);
         let item_clone = Arc::clone(item);
         join_set.spawn(async move {
             loop {
@@ -116,12 +127,30 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
 
                     // Start the request, bounded by watchdog
                     last_progress.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                    let url_snapshot = {
+                        let g = live_url.read().await;
+                        g.clone()
+                    };
                     let mut resp = tokio::select! {
-                        res = rd_clone.http_range_get(&url_clone, &range_header) => {
+                        res = rd_clone.http_range_get(&url_snapshot, &range_header) => {
                             match res {
                                 Ok(r) => r,
                                 Err(e) => {
                                     watchdog.abort();
+                                    if link_heal::attempt_cdn_link_refresh(
+                                        &e,
+                                        &rd_clone,
+                                        &unc,
+                                        &source_link,
+                                        &live_url,
+                                        &refresh_lock,
+                                        &heal_rem,
+                                    )
+                                    .await
+                                    {
+                                        retries = 0;
+                                        continue;
+                                    }
                                     tracing::warn!(
                                         chunk_start,
                                         range = %range_header,
