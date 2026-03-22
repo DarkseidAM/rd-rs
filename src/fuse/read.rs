@@ -133,6 +133,7 @@ pub async fn read(
                 &fs.rd,
                 unrestrict_cache,
                 &config,
+                fs.cache.pause_downloads.subscribe(),
             )
             .await
         {

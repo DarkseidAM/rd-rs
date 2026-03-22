@@ -24,3 +24,8 @@
 - **Rule**: Whenever you add, rename, or change the default value of any field in `src/config/structs.rs` (or `src/config/defaults.rs`), you **must** also update `config.toml` to reflect that field.
 - **How**: Add the field with its default value and a comment explaining what it controls. Use the same section headers (`[vfs]`, `[api]`, `[repair]`, etc.) as the structs use.
 - **Why**: `config.toml` is the canonical example/reference config. If it drifts from the actual config struct, users get confusing behaviour (silent ignored keys or missing documentation).
+
+## Logging Levels
+
+- **Rule**: NEVER change the logging level of existing log statements (e.g., from `tracing::info!` to `tracing::debug!`) without explicitly asking the user for permission.
+- **Why**: Protects the user's expected diagnostic output and prevents subtle regressions in observability.

@@ -108,6 +108,7 @@ retries_until_failed = 1
 
     let unrestrict = new_unrestrict_cache();
     let fuse = CancellationToken::new();
+    let (_pause_tx, pause_rx) = tokio::sync::watch::channel(false);
 
     let mut tasks = Vec::new();
     for i in 0..STRIPES {
@@ -117,9 +118,10 @@ retries_until_failed = 1
         let fuse = fuse.clone();
         let cfg = cfg.clone();
         let unc = Arc::clone(&unrestrict);
+        let p_rx = pause_rx.clone();
         tasks.push(tokio::spawn(async move {
             let off = i * STRIPE;
-            item.read_at(fuse, off, STRIPE as u32, &dl, &rd, &unc, &cfg)
+            item.read_at(fuse, off, STRIPE as u32, &dl, &rd, &unc, &cfg, p_rx)
                 .await
         }));
     }
@@ -165,6 +167,7 @@ retries_until_failed = 1
                 &rd,
                 &unrestrict,
                 &cfg,
+                pause_rx.clone(),
             )
             .await
             .expect("sequential read_at");
