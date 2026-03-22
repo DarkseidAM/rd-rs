@@ -192,6 +192,7 @@ impl CacheItem {
         rd: &Arc<RealDebrid>,
         unrestrict_cache: &UnrestrictCache,
         config: &Config,
+        pause_rx: tokio::sync::watch::Receiver<bool>,
     ) -> std::result::Result<bytes::Bytes, CacheReadError> {
         crate::cache::item_read_at::read_at(
             self,
@@ -202,6 +203,7 @@ impl CacheItem {
             rd,
             unrestrict_cache,
             config,
+            pause_rx,
         )
         .await
     }

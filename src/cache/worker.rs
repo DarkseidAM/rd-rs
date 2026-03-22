@@ -31,6 +31,7 @@ pub(crate) struct DownloaderArgs {
     pub unrestrict_cache: UnrestrictCache,
     pub link_refresh_lock: Arc<Mutex<()>>,
     pub heal_remaining: Arc<AtomicU32>,
+    pub pause_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 /// HTTP Range GET pool for `[start, file_end)` using concurrent connection chunking
@@ -48,24 +49,20 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
         unrestrict_cache,
         link_refresh_lock,
         heal_remaining,
+        pause_rx,
     } = args;
 
     // Apply read-ahead: download further than strictly needed.
     let target_end = (end + read_ahead).min(item.file_size);
 
-    // Compute exactly which pieces of this slice we are missing.
-    let mut chunks_to_fetch = Vec::new();
+    // Compute exactly which slices of this range we are missing.
+    let mut missing_slices = std::collections::VecDeque::new();
     {
         let r = item.ranges.read().unwrap();
         let mut pos = start;
         while pos < target_end {
             if let Some((miss_start, miss_end)) = r.find_missing(pos, target_end) {
-                let mut slice_start = miss_start;
-                while slice_start < miss_end {
-                    let slice_end = (slice_start + base_chunk).min(miss_end);
-                    chunks_to_fetch.push((slice_start, slice_end));
-                    slice_start = slice_end;
-                }
+                missing_slices.push_back((miss_start, miss_end));
                 pos = miss_end;
             } else {
                 break;
@@ -73,13 +70,12 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
         }
     }
 
-    if chunks_to_fetch.is_empty() {
+    if missing_slices.is_empty() {
         return Ok(());
     }
 
-    let total_chunks = chunks_to_fetch.len();
-    let queue = Arc::new(std::sync::Mutex::new(chunks_to_fetch.into_iter()));
-    let num_workers = max_parallel_streams.min(total_chunks as u32).max(1);
+    let queue = Arc::new(std::sync::Mutex::new(missing_slices));
+    let num_workers = max_parallel_streams.max(1);
 
     let mut join_set = tokio::task::JoinSet::new();
 
@@ -92,12 +88,33 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
         let refresh_lock = Arc::clone(&link_refresh_lock);
         let heal_rem = Arc::clone(&heal_remaining);
         let item_clone = Arc::clone(item);
+        let mut p_rx = pause_rx.clone();
+
         join_set.spawn(async move {
+            let mut multiplier: u64 = 1;
+
             loop {
-                let chunk_opt = { queue_clone.lock().unwrap().next() };
-                let Some((chunk_start, chunk_end)) = chunk_opt else { break Ok::<(), anyhow::Error>(()) };
+                if *p_rx.borrow() {
+                    let _ = p_rx.changed().await;
+                }
+
+                let chunk_opt = {
+                    let mut q = queue_clone.lock().unwrap();
+                    if let Some((slice_start, slice_end)) = q.pop_front() {
+                        let chunk_size = (base_chunk * multiplier).min(slice_end - slice_start);
+                        let chunk_end = slice_start + chunk_size;
+                        if chunk_end < slice_end {
+                            q.push_front((chunk_end, slice_end));
+                        }
+                        Some((slice_start, chunk_end))
+                    } else {
+                        None
+                    }
+                };
+                let Some((chunk_start, mut chunk_end)) = chunk_opt else { break Ok::<(), anyhow::Error>(()) };
 
                 let mut retries = 0;
+
                 loop {
                     // Acquire global RD semaphore permit!
                     let _permit = rd_clone.connection_semaphore.acquire().await
@@ -162,6 +179,14 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                             "HTTP range GET failed after {MAX_DOWNLOAD_RETRIES} retries at {chunk_start} ({range_header}): {e:#}"
                                         ));
                                     }
+
+                                    multiplier = 1;
+                                    let chunk_size = chunk_end - chunk_start;
+                                    if chunk_size > base_chunk {
+                                        let new_chunk_end = chunk_start + base_chunk;
+                                        queue_clone.lock().unwrap().push_front((new_chunk_end, chunk_end));
+                                        chunk_end = new_chunk_end;
+                                    }
                                     continue;
                                 }
                             }
@@ -178,6 +203,13 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                 return Err(anyhow::anyhow!(
                                     "stream stalled (headers): no progress for 45s at {chunk_start} ({range_header})"
                                 ));
+                            }
+                            multiplier = 1;
+                            let chunk_size = chunk_end - chunk_start;
+                            if chunk_size > base_chunk {
+                                let new_chunk_end = chunk_start + base_chunk;
+                                queue_clone.lock().unwrap().push_front((new_chunk_end, chunk_end));
+                                chunk_end = new_chunk_end;
                             }
                             continue;
                         }
@@ -247,10 +279,19 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                             if retries >= MAX_DOWNLOAD_RETRIES {
                                 return Err(e);
                             }
+                            multiplier = 1;
+                            let chunk_size = chunk_end - chunk_start;
+                            if chunk_size > base_chunk {
+                                let new_chunk_end = chunk_start + base_chunk;
+                                queue_clone.lock().unwrap().push_front((new_chunk_end, chunk_end));
+                                chunk_end = new_chunk_end;
+                            }
                             time::sleep(Duration::from_secs(retries as u64 * 2)).await;
                         }
                     }
                 } // End retry loop
+
+                multiplier = (multiplier * 2).min(16);
             } // End chunk loop
         });
     }

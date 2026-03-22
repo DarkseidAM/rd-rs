@@ -45,6 +45,7 @@ pub struct Cache {
     // Speed sampling state
     last_speed_bytes: AtomicI64,
     last_speed_time: AtomicI64,
+    pub pause_downloads: tokio::sync::watch::Sender<bool>,
 }
 
 impl Cache {
@@ -52,6 +53,7 @@ impl Cache {
         let cache_dir = cache_dir.as_ref().to_path_buf();
         let _ = std::fs::create_dir_all(&cache_dir);
 
+        let (pause_tx, _) = tokio::sync::watch::channel(false);
         let cache = Arc::new(Self {
             cache_dir,
             config,
@@ -63,6 +65,7 @@ impl Cache {
             active_circuit_breakers: AtomicI32::new(0),
             last_speed_bytes: AtomicI64::new(0),
             last_speed_time: AtomicI64::new(0),
+            pause_downloads: pause_tx,
         });
 
         // Spawn background tasks.
@@ -266,7 +269,6 @@ impl Cache {
             return;
         }
 
-        // Use statvfs via libc.
         #[cfg(target_os = "linux")]
         {
             use std::ffi::CString;
@@ -275,11 +277,17 @@ impl Cache {
                 if unsafe { libc::statvfs(path_cstr.as_ptr(), &mut stat) } == 0 {
                     let free_bytes = stat.f_bavail * stat.f_bsize;
                     if free_bytes < min_free {
-                        tracing::warn!(
-                            free_gb = free_bytes / 1_073_741_824,
-                            min_free_gb = min_free / 1_073_741_824,
-                            "cache dir low on disk space — new downloads may be paused"
-                        );
+                        if !*self.pause_downloads.borrow() {
+                            tracing::warn!(
+                                free_gb = free_bytes / 1_073_741_824,
+                                min_free_gb = min_free / 1_073_741_824,
+                                "cache dir low on disk space — pausing active downloads"
+                            );
+                            let _ = self.pause_downloads.send(true);
+                        }
+                    } else if *self.pause_downloads.borrow() {
+                        tracing::info!("cache dir disk space recovered — unpausing downloads");
+                        let _ = self.pause_downloads.send(false);
                     }
                 }
             }
