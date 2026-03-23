@@ -102,4 +102,18 @@ impl ByteRanges {
         // Cursor is still inside [start, end).
         Some((cursor, end))
     }
+
+    /// Expose the internal interval list as an immutable slice.
+    pub fn intervals(&self) -> &[(u64, u64)] {
+        &self.intervals
+    }
+
+    /// Build a normalized range set from arbitrary intervals.
+    pub fn from_intervals(intervals: Vec<(u64, u64)>) -> Self {
+        let mut out = Self::new();
+        for (s, e) in intervals {
+            out.insert(s, e);
+        }
+        out
+    }
 }

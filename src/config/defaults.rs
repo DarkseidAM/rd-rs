@@ -56,9 +56,6 @@ pub(super) fn default_read_wait() -> String {
 pub(super) fn default_parallel_streams() -> u32 {
     8
 }
-pub(super) fn default_recover_sparse_extents() -> bool {
-    false
-}
 pub(super) fn default_mount_path() -> PathBuf {
     PathBuf::from("/mnt/zurg")
 }

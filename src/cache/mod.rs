@@ -12,7 +12,7 @@ pub(crate) mod download_session;
 pub mod item;
 pub(crate) mod item_read_at;
 pub(crate) mod link_heal;
-pub(crate) mod sparse;
+pub(crate) mod range_db;
 pub(crate) mod worker;
 
 pub use cache::Cache;

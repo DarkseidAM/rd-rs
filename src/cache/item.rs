@@ -5,8 +5,9 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::sync::Notify;
@@ -18,7 +19,9 @@ use crate::rd::api::UnrestrictCache;
 use crate::rd::types::Download;
 
 use crate::cache::download_session::DownloadSession;
-use crate::cache::sparse::scan_sparse_file;
+use crate::cache::range_db::RangeDb;
+
+const FLUSH_DEBOUNCE: Duration = Duration::from_secs(2);
 
 // ─── CacheItem ────────────────────────────────────────────────────────────────
 
@@ -39,14 +42,26 @@ pub struct CacheItem {
     pub(crate) downloaded_bytes: AtomicI64,
     /// Active download tasks (position + ref-count / abort handle).
     pub(crate) active_workers: std::sync::Mutex<Vec<Arc<DownloadSession>>>,
+    pub(crate) cache_key: String,
+    pub(crate) range_db: Arc<RangeDb>,
+    persist_dirty: AtomicBool,
+    last_persist_unix: AtomicU64,
 }
 
 impl CacheItem {
     /// Create or reopen the sparse file for this cache entry.
-    pub fn open_or_create(
+    pub fn open_or_create(path: PathBuf, file_size: u64) -> Result<Arc<Self>> {
+        let fallback_key = path.to_string_lossy().into_owned();
+        let range_db = Arc::new(RangeDb::open_in_memory()?);
+        Self::open_or_create_with_db(path, fallback_key, file_size, range_db)
+    }
+
+    /// Create or reopen with a shared persistent range database.
+    pub fn open_or_create_with_db(
         path: PathBuf,
+        cache_key: String,
         file_size: u64,
-        recover_sparse_extents: bool,
+        range_db: Arc<RangeDb>,
     ) -> Result<Arc<Self>> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("create cache dir {:?}", parent))?;
@@ -69,20 +84,26 @@ impl CacheItem {
                 .with_context(|| format!("truncate cache file {:?}", path))?;
         }
 
-        let ranges = if recover_sparse_extents {
-            scan_sparse_file(&file, file_size)
-        } else {
-            ByteRanges::new()
-        };
-        if recover_sparse_extents && !ranges.is_empty() {
-            let mb = ranges.total_bytes() as f64 / 1048576.0;
-            tracing::info!(
-                "Recovered {:.2} MB of cached bytes from existing sparse file for {:?}",
-                mb,
-                path.file_name().unwrap_or_default()
-            );
+        let mut ranges = ByteRanges::new();
+        if let Some(row) = range_db.get(&cache_key)? {
+            if row.file_size == file_size {
+                ranges = row.ranges;
+                tracing::info!(
+                    key = %cache_key,
+                    restored_intervals = ranges.len(),
+                    restored_mb = (ranges.total_bytes() as f64 / 1_048_576.0),
+                    updated_at = row.updated_at,
+                    "cache open: restored ranges from cache_ranges.db"
+                );
+            } else {
+                tracing::warn!(
+                    key = %cache_key,
+                    db_file_size = row.file_size,
+                    expected = file_size,
+                    "cache open: range db file_size mismatch; ignoring persisted ranges"
+                );
+            }
         }
-
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -97,6 +118,10 @@ impl CacheItem {
             notify: Arc::new(Notify::new()),
             downloaded_bytes: AtomicI64::new(0),
             active_workers: std::sync::Mutex::new(Vec::new()),
+            cache_key,
+            range_db,
+            persist_dirty: AtomicBool::new(false),
+            last_persist_unix: AtomicU64::new(now_secs),
         }))
     }
 
@@ -112,11 +137,15 @@ impl CacheItem {
 
     /// Decrement open handle count.
     pub fn release(&self) {
-        self.opens
+        let prev = self
+            .opens
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             })
-            .ok();
+            .unwrap_or(0);
+        if prev == 1 {
+            self.flush_ranges(true);
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -172,10 +201,44 @@ impl CacheItem {
 
         let end = offset + data.len() as u64;
         self.ranges.write().unwrap().insert(offset, end);
+        self.persist_dirty.store(true, Ordering::Relaxed);
         self.downloaded_bytes
             .fetch_add(data.len() as i64, Ordering::Relaxed);
+        self.flush_ranges(false);
         self.notify.notify_waiters();
         Ok(())
+    }
+
+    pub fn flush_ranges(&self, force: bool) {
+        if !self.persist_dirty.load(Ordering::Relaxed) {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let last = self.last_persist_unix.load(Ordering::Relaxed);
+        if !force && now.saturating_sub(last) < FLUSH_DEBOUNCE.as_secs() {
+            return;
+        }
+        let snapshot = self.ranges.read().unwrap().clone();
+        if let Err(e) = self
+            .range_db
+            .upsert(&self.cache_key, self.file_size, now as i64, &snapshot)
+        {
+            tracing::warn!(
+                key = %self.cache_key,
+                "cache ranges persist failed: {e:#}"
+            );
+            return;
+        }
+        self.last_persist_unix.store(now, Ordering::Relaxed);
+        self.persist_dirty.store(false, Ordering::Relaxed);
+        tracing::trace!(
+            key = %self.cache_key,
+            intervals = snapshot.len(),
+            "cache ranges persisted"
+        );
     }
 
     /// Serve `[offset, offset+size)` from cache, downloading if needed.
