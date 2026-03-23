@@ -29,6 +29,8 @@ const EVICT_THRESHOLD: f64 = 0.90;
 const EVICT_INTERVAL: Duration = Duration::from_secs(30);
 /// How often the speed sampler fires.
 const SPEED_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+/// Max rows considered per TTL cleanup pass (`stale_keys` query limit).
+const TTL_STALE_KEYS_QUERY_LIMIT: usize = 10_000;
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
 
@@ -312,7 +314,7 @@ impl Cache {
             return;
         }
         let cutoff = now_secs.saturating_sub(age) as i64;
-        let stale_keys = match self.range_db.stale_keys(cutoff, 10_000) {
+        let stale_keys = match self.range_db.stale_keys(cutoff, TTL_STALE_KEYS_QUERY_LIMIT) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("cache ranges stale key lookup failed: {e:#}");
@@ -323,18 +325,32 @@ impl Cache {
             return;
         }
 
-        let mut deleted_files = 0usize;
-        let mut keys_to_delete = Vec::new();
-        for key in &stale_keys {
-            if self.items.contains_key(key) {
-                continue;
-            }
-            keys_to_delete.push(key.clone());
-            let path = self.cache_dir.join(key);
-            if std::fs::remove_file(&path).is_ok() {
-                deleted_files += 1;
-            }
-        }
+        let (keys_to_delete, deleted_files) = stale_keys
+            .iter()
+            .filter(|key| !self.items.contains_key(*key))
+            .fold(
+                (Vec::<&str>::new(), 0usize),
+                |(mut keys, mut deleted_files), key| {
+                    let path = self.cache_dir.join(key);
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {
+                            deleted_files += 1;
+                            keys.push(key.as_str());
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            keys.push(key.as_str());
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                cache_key = %key,
+                                error = %e,
+                                "cache ttl cleanup: failed to remove stale cache file; will retry"
+                            );
+                        }
+                    }
+                    (keys, deleted_files)
+                },
+            );
         match self.range_db.delete_keys(&keys_to_delete) {
             Ok(rows) => {
                 tracing::info!(

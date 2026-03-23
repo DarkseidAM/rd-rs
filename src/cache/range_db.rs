@@ -44,8 +44,7 @@ impl RangeDb {
                 file_size INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 ranges_blob TEXT NOT NULL,
-                schema_version INTEGER NOT NULL DEFAULT 1,
-                identity_hash TEXT
+                schema_version INTEGER NOT NULL DEFAULT 1
             );
             CREATE INDEX IF NOT EXISTS idx_cache_ranges_updated_at
             ON cache_ranges(updated_at);
@@ -114,7 +113,7 @@ impl RangeDb {
         Ok(())
     }
 
-    pub fn delete_keys(&self, keys: &[String]) -> Result<usize> {
+    pub fn delete_keys(&self, keys: &[&str]) -> Result<usize> {
         if keys.is_empty() {
             return Ok(0);
         }
@@ -124,7 +123,7 @@ impl RangeDb {
         {
             let mut stmt = tx.prepare("DELETE FROM cache_ranges WHERE cache_key = ?1")?;
             for key in keys {
-                deleted += stmt.execute(params![key])?;
+                deleted += stmt.execute(params![*key])?;
             }
         }
         tx.commit()?;
@@ -146,8 +145,9 @@ impl RangeDb {
     }
 
     pub fn maybe_checkpoint(&self) {
-        if let Ok(conn) = self.conn.lock() {
-            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        let conn = self.conn.lock().expect("range db mutex poisoned");
+        if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+            tracing::warn!(error = %e, "cache ranges wal_checkpoint failed");
         }
     }
 }
