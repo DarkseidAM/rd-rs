@@ -15,6 +15,8 @@ pub const REPAIR_FAILED: &str = "repair failed";
 pub const NOT_CACHED: &str = "not cached (restricted to cached)";
 pub const STALLED_DOWNLOAD: &str = "stalled download";
 pub const DUPLICATE_FILE_IDS: &str = "duplicate file IDs (pack torrent)";
+/// Detail API failed or returned nothing (often stale `rd_ids` after RD removed the torrent).
+pub const MISSING_TORRENT_DETAIL: &str = "missing torrent detail (stale or removed rd id)";
 
 /// Map RD API error substrings (zurg `UnrepairableErrorsMap`) to canonical reasons.
 pub fn from_rd_error_message(msg: &str) -> Option<&'static str> {
@@ -36,6 +38,9 @@ pub fn from_rd_error_message(msg: &str) -> Option<&'static str> {
     }
     if m.contains("not allowed") {
         return Some(NOT_ALLOWED);
+    }
+    if m.contains("unknown") && (m.contains("resource") || m.contains("ressource")) {
+        return Some(MISSING_TORRENT_DETAIL);
     }
     None
 }

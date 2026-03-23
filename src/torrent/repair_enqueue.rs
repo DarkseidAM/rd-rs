@@ -1,6 +1,7 @@
 //! Priority repair queue: enqueue one key, all keys, or front-of-queue “force” repair.
 
 use crate::db::TorrentState;
+use crate::repair::detect::periodic_repair_eligible;
 
 use super::TorrentManager;
 
@@ -9,10 +10,13 @@ use super::TorrentManager;
 pub struct EnqueueRepairAllOptions {
     /// Clear `unrepairable_reason` (back to broken with no reason) before enqueueing.
     pub clear_unrepairable: bool,
+    /// Enqueue every torrent. If false, only periodic-scan candidates (broken, under repair, or ok with issues).
+    pub all: bool,
 }
 
 impl TorrentManager {
-    /// Enqueue every known torrent (access key), optionally clearing unrepairable reasons first.
+    /// Enqueue torrent access keys (see [`EnqueueRepairAllOptions::all`]), optionally clearing
+    /// unrepairable reasons first.
     ///
     /// Dedupes against the current queue tail. Wakes the repair engine once.
     pub async fn enqueue_repair_all(&self, opts: EnqueueRepairAllOptions) {
@@ -32,6 +36,14 @@ impl TorrentManager {
         }
         let mut q = self.repair_queue.lock().await;
         for key in keys {
+            if !opts.all
+                && self
+                    .torrents
+                    .get(&key)
+                    .is_none_or(|mt| !periodic_repair_eligible(&mt))
+            {
+                continue;
+            }
             if !q.iter().any(|k| k == &key) {
                 q.push_back(key);
             }

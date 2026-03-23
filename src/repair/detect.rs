@@ -2,10 +2,29 @@
 
 use std::collections::HashSet;
 
+use crate::db::TorrentState;
 use crate::rd::types::{Torrent, TorrentInfo};
 use crate::torrent::ManagedTorrent;
 
 /// Selected-file index `i` should have `links[i]` non-empty (matches FUSE link resolution).
+/// Same rule as the repair engine periodic scan: eligible for repair work (not skipped as unrepairable).
+pub fn periodic_repair_eligible(mt: &ManagedTorrent) -> bool {
+    if mt.unrepairable_reason.is_some() {
+        return false;
+    }
+    let unassigned = mt
+        .info
+        .as_ref()
+        .is_some_and(|info| unassigned_selected_link_count(info) > 0);
+    let file_broken = mt.file_states.as_ref().is_some_and(|fs| {
+        fs.iter()
+            .any(|(p, s)| s == "broken" && path_looks_playable(p))
+    });
+    mt.state == TorrentState::Broken
+        || mt.state == TorrentState::UnderRepair
+        || (mt.state == TorrentState::Ok && (unassigned || file_broken))
+}
+
 pub fn unassigned_selected_link_count(info: &TorrentInfo) -> usize {
     let mut missing = 0usize;
     let mut sel_i = 0usize;

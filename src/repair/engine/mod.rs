@@ -9,14 +9,14 @@ use arc_swap::ArcSwap;
 use tokio::sync::Mutex;
 use tokio::time;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::db::{Db, TorrentState};
 use crate::rd::RealDebrid;
 use crate::torrent::TorrentManager;
 
-use super::detect::{path_looks_playable, unassigned_selected_link_count};
+use super::detect::periodic_repair_eligible;
 
 /// Coordinates background repair (one session at a time; mirrors zurg repair queue).
 pub struct RepairEngine {
@@ -74,26 +74,23 @@ impl RepairEngine {
         }
 
         if periodic {
+            let mut skipped_unrepairable = 0usize;
+            let mut periodic_eligible = 0usize;
             for e in self.torrent_manager.torrents.iter() {
                 let mt = e.value();
                 if mt.unrepairable_reason.is_some() {
+                    skipped_unrepairable += 1;
                     continue;
                 }
-                let unassigned = mt
-                    .info
-                    .as_ref()
-                    .is_some_and(|info| unassigned_selected_link_count(info) > 0);
-                let file_broken = mt.file_states.as_ref().is_some_and(|fs| {
-                    fs.iter()
-                        .any(|(p, s)| s == "broken" && path_looks_playable(p))
-                });
-                let eligible = mt.state == TorrentState::Broken
-                    || mt.state == TorrentState::UnderRepair
-                    || (mt.state == TorrentState::Ok && (unassigned || file_broken));
-                if eligible {
+                if periodic_repair_eligible(mt) {
+                    periodic_eligible += 1;
                     keys.push(mt.access_key.clone());
                 }
             }
+            info!(
+                periodic_eligible,
+                skipped_unrepairable, "Repair engine: periodic candidate scan"
+            );
         }
 
         keys.sort();
@@ -157,7 +154,7 @@ impl RepairEngine {
                     let wait = self.throttle_wait_duration(&cfg).await;
                     let mut ran_notify_instead = false;
                     if wait > Duration::ZERO {
-                        debug!(
+                        info!(
                             "Repair engine: periodic scan throttled, waiting {:?} (or priority notify)",
                             wait
                         );

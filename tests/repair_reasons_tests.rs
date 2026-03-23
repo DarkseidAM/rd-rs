@@ -1,6 +1,6 @@
 use rd_rs::repair::reasons::{
-    self, DUPLICATE_FILE_IDS, INFRINGING, INVALID, NOT_ALLOWED, NOT_CACHED, TOO_BIG, UNAVAILABLE,
-    UNSUPPORTED, from_rd_error_message,
+    self, DUPLICATE_FILE_IDS, INFRINGING, INVALID, MISSING_TORRENT_DETAIL, NOT_ALLOWED, NOT_CACHED,
+    TOO_BIG, UNAVAILABLE, UNSUPPORTED, from_rd_error_message,
 };
 
 #[test]
@@ -54,6 +54,14 @@ fn from_rd_error_maps_not_allowed() {
 #[test]
 fn from_rd_error_unknown_returns_none() {
     assert_eq!(from_rd_error_message("random network glitch"), None);
+}
+
+#[test]
+fn from_rd_error_maps_unknown_resource() {
+    assert_eq!(
+        from_rd_error_message("RD API error (code=7): unknown_ressource"),
+        Some(MISSING_TORRENT_DETAIL)
+    );
 }
 
 #[test]

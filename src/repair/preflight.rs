@@ -176,9 +176,8 @@ pub async fn probe_selected_links(
                     }
                     file_states.insert(file.path.clone(), "broken".to_string());
                 } else {
-                    file_states
-                        .entry(file.path.clone())
-                        .or_insert_with(|| "ok".to_string());
+                    // Overwrite stale `broken` when this slot verifies clean (or_insert would keep broken).
+                    file_states.insert(file.path.clone(), "ok".to_string());
                 }
             }
             Err(e) => {

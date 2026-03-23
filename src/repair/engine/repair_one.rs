@@ -149,9 +149,17 @@ pub(super) async fn repair_one_torrent(engine: &RepairEngine, access_key: &str) 
     done.completed_at = Some(chrono::Utc::now().timestamp());
 
     match outcome {
-        CascadeOutcome::Success => {
+        CascadeOutcome::Success { new_rd_ids } => {
             done.status = RepairJobStatus::Done;
             let _ = Db::update_repair_job_on_conn(&engine.db, &done).await;
+            if let Some(ids) = new_rd_ids
+                && let Err(e) = engine
+                    .torrent_manager
+                    .replace_rd_ids_after_repair(access_key, ids)
+                    .await
+            {
+                warn!("persist new rd_ids after repair for {}: {e}", access_key);
+            }
             if let Err(e) = engine
                 .torrent_manager
                 .update_torrent_state(access_key, TorrentState::Ok, None)
