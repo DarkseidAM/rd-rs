@@ -91,7 +91,7 @@ retries_until_failed = 1
 
     let dir = tempdir().expect("tempdir");
     let item = Arc::new(
-        CacheItem::open_or_create(dir.path().join("chunk_limits.bin"), FILE_LEN, false)
+        CacheItem::open_or_create(dir.path().join("chunk_limits.bin"), FILE_LEN)
             .expect("cache item"),
     );
 

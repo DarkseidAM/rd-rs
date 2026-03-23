@@ -15,6 +15,7 @@ use dashmap::DashMap;
 use tokio::time;
 
 use crate::cache::item::CacheItem;
+use crate::cache::range_db::RangeDb;
 
 /// Idle items are evictable after 1 minute with no open handles.
 const ITEM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -35,6 +36,7 @@ pub struct Cache {
     pub cache_dir: PathBuf,
     config: Arc<VfsConfig>,
     items: Arc<DashMap<String, Arc<CacheItem>>>,
+    range_db: Arc<RangeDb>,
     // Stats
     pub hits: AtomicI64,
     pub misses: AtomicI64,
@@ -52,12 +54,20 @@ impl Cache {
     pub fn new(cache_dir: impl AsRef<Path>, config: Arc<VfsConfig>) -> Arc<Self> {
         let cache_dir = cache_dir.as_ref().to_path_buf();
         let _ = std::fs::create_dir_all(&cache_dir);
+        let range_db_path = cache_dir.join("cache_ranges.db");
+        let range_db = Arc::new(RangeDb::open(&range_db_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to open cache ranges db at {:?}: {e:#}",
+                range_db_path
+            )
+        }));
 
         let (pause_tx, _) = tokio::sync::watch::channel(false);
         let cache = Arc::new(Self {
             cache_dir,
             config,
             items: Arc::new(DashMap::new()),
+            range_db,
             hits: AtomicI64::new(0),
             misses: AtomicI64::new(0),
             total_downloaded: AtomicI64::new(0),
@@ -101,11 +111,9 @@ impl Cache {
 
         // Slow path — only one winner thanks to DashMap's per-shard locking.
         let path = self.cache_dir.join(access_key).join(filename);
-        tracing::info!(
-            file = %filename,
-            "Streaming file from cache"
-        );
-        let item = CacheItem::open_or_create(path, file_size, self.config.recover_sparse_extents)?;
+        let item =
+            CacheItem::open_or_create_with_db(path, key.clone(), file_size, self.range_db.clone())?;
+        tracing::info!(file = %filename, key = %key, "cache open");
         self.items.entry(key).or_insert_with(|| Arc::clone(&item));
         Ok(item)
     }
@@ -176,7 +184,9 @@ impl Cache {
             .collect();
 
         for key in &to_remove {
-            self.items.remove(key);
+            if let Some((_, item)) = self.items.remove(key) {
+                item.flush_ranges(true);
+            }
         }
 
         if !to_remove.is_empty() {
@@ -185,6 +195,8 @@ impl Cache {
                 to_remove.len()
             );
         }
+
+        self.ttl_cleanup(now_secs);
 
         // Phase 2: disk eviction by LRU if over size threshold.
         let max_bytes = parse_byte_size(&self.config.cache_max_size);
@@ -293,6 +305,48 @@ impl Cache {
             }
         }
     }
+
+    fn ttl_cleanup(&self, now_secs: u64) {
+        let age = parse_age_secs(&self.config.cache_max_age);
+        if age == 0 {
+            return;
+        }
+        let cutoff = now_secs.saturating_sub(age) as i64;
+        let stale_keys = match self.range_db.stale_keys(cutoff, 10_000) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("cache ranges stale key lookup failed: {e:#}");
+                return;
+            }
+        };
+        if stale_keys.is_empty() {
+            return;
+        }
+
+        let mut deleted_files = 0usize;
+        let mut keys_to_delete = Vec::new();
+        for key in &stale_keys {
+            if self.items.contains_key(key) {
+                continue;
+            }
+            keys_to_delete.push(key.clone());
+            let path = self.cache_dir.join(key);
+            if std::fs::remove_file(&path).is_ok() {
+                deleted_files += 1;
+            }
+        }
+        match self.range_db.delete_keys(&keys_to_delete) {
+            Ok(rows) => {
+                tracing::info!(
+                    ttl_rows = rows,
+                    ttl_files = deleted_files,
+                    "cache ttl cleanup"
+                );
+            }
+            Err(e) => tracing::warn!("cache ranges ttl row delete failed: {e:#}"),
+        }
+        self.range_db.maybe_checkpoint();
+    }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -303,4 +357,23 @@ fn path_to_key(cache_dir: &Path, file_path: &Path) -> String {
         .ok()
         .map(|rel| rel.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+fn parse_age_secs(s: &str) -> u64 {
+    let raw = s.trim().to_ascii_lowercase();
+    if raw.is_empty() || raw == "0" {
+        return 0;
+    }
+    let (num, suffix) = raw
+        .find(|c: char| c.is_ascii_alphabetic())
+        .map(|i| (&raw[..i], &raw[i..]))
+        .unwrap_or((raw.as_str(), ""));
+    let base: u64 = num.trim().parse().unwrap_or(0);
+    match suffix.trim() {
+        "s" | "sec" | "secs" | "second" | "seconds" => base,
+        "m" | "min" | "mins" | "minute" | "minutes" => base * 60,
+        "h" | "hr" | "hrs" | "hour" | "hours" => base * 3600,
+        "d" | "day" | "days" => base * 86400,
+        _ => base,
+    }
 }

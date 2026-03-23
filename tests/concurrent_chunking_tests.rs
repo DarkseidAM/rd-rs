@@ -11,7 +11,7 @@ use tempfile::tempdir;
 /// Builds a fresh CacheItem backed by a temp sparse file of `file_size` bytes.
 fn make_cache_item(dir: &std::path::Path, name: &str, file_size: u64) -> Arc<CacheItem> {
     let path = dir.join(name);
-    CacheItem::open_or_create(path, file_size, false).unwrap()
+    CacheItem::open_or_create(path, file_size).unwrap()
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
