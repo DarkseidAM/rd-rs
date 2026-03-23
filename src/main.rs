@@ -4,11 +4,12 @@ use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::time::FormatTime;
 
+use clap::{Parser, Subcommand};
 use fuse3::raw::Session;
 use rd_rs::config::Config;
 use rd_rs::db::Db;
 use rd_rs::fuse::RdFs;
-use rd_rs::torrent::TorrentManager;
+use rd_rs::torrent::{EnqueueRepairAllOptions, TorrentManager};
 
 struct LocalTimer;
 
@@ -22,14 +23,88 @@ impl FormatTime for LocalTimer {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_timer(LocalTimer)
         .with_env_filter(filter)
         .init();
+}
 
+#[derive(Parser)]
+#[command(name = "rd-rs", about = "Real-Debrid FUSE filesystem")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Enqueue torrents for repair and run one repair pass (no FUSE mount, no refresh loops).
+    Repair(RepairCli),
+}
+
+#[derive(Parser)]
+struct RepairCli {
+    /// Clear `unrepairable_reason` on every torrent before enqueueing.
+    #[arg(long)]
+    clear_unrepairable: bool,
+    /// Also add periodic-scan candidates (unassigned links, broken playable files, etc.).
+    #[arg(long)]
+    periodic_eligible: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    init_tracing();
+    let cli = Cli::parse();
+    match cli.command {
+        None => run_fuse_mount().await,
+        Some(Commands::Repair(r)) => run_repair_cli(r).await,
+    }
+}
+
+async fn run_repair_cli(args: RepairCli) -> Result<()> {
+    let cfg = Config::load("config.toml")?;
+    tracing::info!(
+        "repair CLI: enqueue all + one pass (clear_unrepairable={}, periodic_eligible={})",
+        args.clear_unrepairable,
+        args.periodic_eligible
+    );
+
+    let db_path = cfg.cache_dir.join("rd-rs.db");
+    let db = Db::open(&db_path).await?;
+    db.init_schema().await?;
+
+    let config = Arc::new(ArcSwap::from_pointee(cfg.clone()));
+    let rd_client = rd_rs::rd::RealDebrid::new(&cfg)?;
+    rd_rs::rd::cdn::run_network_test(&rd_client, &cfg).await;
+    let rd_client = Arc::new(rd_client);
+    let db = Arc::new(db.conn);
+
+    let torrent_mgr = TorrentManager::new(rd_client.clone(), db.clone(), config.clone()).await?;
+    let torrent_mgr = Arc::new(torrent_mgr);
+
+    torrent_mgr
+        .enqueue_repair_all(EnqueueRepairAllOptions {
+            clear_unrepairable: args.clear_unrepairable,
+        })
+        .await;
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let engine = Arc::new(rd_rs::repair::engine::RepairEngine::new(
+        rd_client,
+        db,
+        config,
+        torrent_mgr,
+        cancel,
+    ));
+    engine.run_one_pass_for_cli(args.periodic_eligible).await;
+    tracing::info!("repair CLI: pass complete");
+    Ok(())
+}
+
+async fn run_fuse_mount() -> Result<()> {
     let cfg = Config::load("config.toml")?;
     tracing::info!("Config loaded: mount_path={}", cfg.mount_path.display());
 
@@ -38,7 +113,6 @@ async fn main() -> Result<()> {
     db.init_schema().await?;
     tracing::info!("SQLite schema initialised (WAL) at: {}", db_path.display());
 
-    // Live config for hot-reload (TorrentManager, FUSE); RD client keeps initial config.
     let config = Arc::new(ArcSwap::from_pointee(cfg.clone()));
     let _config_watcher = match Config::watch("config.toml") {
         Ok((mut rx, watcher)) => {
@@ -58,7 +132,6 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Wait for the CDN latency test to complete before starting torrent refresh
     let rd_client = rd_rs::rd::RealDebrid::new(&cfg)?;
     tracing::info!("RealDebrid clients ready");
     rd_rs::rd::cdn::run_network_test(&rd_client, &cfg).await;
@@ -66,13 +139,21 @@ async fn main() -> Result<()> {
     let rd_client = Arc::new(rd_client);
     let db = Arc::new(db.conn);
 
-    // Create and start TorrentManager (uses live config for refresh interval, hook, etc.)
     tracing::info!("Starting TorrentManager...");
-    let torrent_mgr = TorrentManager::new(rd_client.clone(), db, config.clone()).await?;
+    let torrent_mgr = TorrentManager::new(rd_client.clone(), db.clone(), config.clone()).await?;
     let torrent_mgr = Arc::new(torrent_mgr);
     torrent_mgr.start();
 
-    // Setup FUSE options
+    tracing::info!("Starting RepairEngine...");
+    let repair_engine = Arc::new(rd_rs::repair::engine::RepairEngine::new(
+        rd_client.clone(),
+        db.clone(),
+        config.clone(),
+        torrent_mgr.clone(),
+        torrent_mgr.cancel_token(),
+    ));
+    repair_engine.spawn();
+
     let mut mount_options = fuse3::MountOptions::default();
     mount_options
         .allow_other(true)
@@ -80,19 +161,15 @@ async fn main() -> Result<()> {
         .fs_name("rd-rs")
         .uid(unsafe { libc::getuid() })
         .gid(unsafe { libc::getgid() })
-        // Stateless readdir: no opendir/releasedir; kernel sends readdir only.
         .no_open_dir_support(true);
 
-    // Ensure mount path exists (from current config)
     let mount_path = config.load().mount_path.clone();
     if !mount_path.exists() {
         tracing::info!("Creating mount path: {}", mount_path.display());
         std::fs::create_dir_all(&mount_path)?;
     }
 
-    // Mount RdFs
     tracing::info!("Mounting FUSE filesystem at {}...", mount_path.display());
-    // Force unmount any stale mount first (Transport endpoint is not connected)
     let umount_res = tokio::process::Command::new("fusermount3")
         .arg("-uz")
         .arg(&mount_path)
@@ -112,10 +189,9 @@ async fn main() -> Result<()> {
     let cache =
         rd_rs::cache::Cache::new(&cache_dir, std::sync::Arc::new(config.load().vfs.clone()));
 
-    let fs = RdFs::new(torrent_mgr.torrents.clone(), rd_client, config, cache);
+    let fs = RdFs::new(torrent_mgr.clone(), rd_client, config, cache);
     let mut mount_handle = Session::new(mount_options).mount(fs, &mount_path).await?;
 
-    // Wait for shutdown signal or mount to exit
     tokio::select! {
         res = &mut mount_handle => {
             if let Err(e) = res {
@@ -126,9 +202,7 @@ async fn main() -> Result<()> {
             tracing::info!("Ctrl-C received, shutting down...");
             torrent_mgr.shutdown();
 
-            // FUSE unmount logic
             tracing::info!("Unmounting FUSE filesystem...");
-            // TODO: Add retries here later
             if let Err(e) = mount_handle.unmount().await {
                 tracing::error!("Failed to unmount dynamically: {}", e);
             }

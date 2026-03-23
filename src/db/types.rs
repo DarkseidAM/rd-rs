@@ -46,6 +46,8 @@ pub struct TorrentRow {
     pub file_states: Option<String>,
     pub last_seen_at: Option<i64>,
     pub last_repaired_at: Option<i64>,
+    /// Unix time when `under_repair` began (zurg `SinceWhen` / repair timeout).
+    pub under_repair_started_at: Option<i64>,
 }
 
 impl TorrentRow {

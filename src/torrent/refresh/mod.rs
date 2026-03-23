@@ -1,14 +1,19 @@
 //! Background refresh loop — polls RD API, diffs, persists to SQLite.
 
+pub mod coordination;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::sleep;
 
 use crate::db::{TorrentRow, TorrentState};
+use crate::repair::detect::is_stalled_download_from_list;
 use crate::torrent::{ManagedTorrent, TorrentManager, access_key};
 
-mod diff;
+use coordination::{rd_id_belongs_to_under_repair, skip_local_remove_for_state};
+
+pub mod diff;
 mod loops;
 
 pub use diff::{DiffResult, diff};
@@ -102,8 +107,47 @@ async fn run_once(mgr: &TorrentManager) -> anyhow::Result<()> {
             "Refresh: found {} errored/invalid torrents, skipping them",
             errored_ids.len()
         );
+        if mgr.config.load().repair.delete_error_torrents {
+            for (id, name) in &errored_ids {
+                if rd_id_belongs_to_under_repair(mgr, id) {
+                    tracing::info!(
+                        "Skip delete RD error torrent {} ({}) — id belongs to under_repair",
+                        id,
+                        name
+                    );
+                    continue;
+                }
+                match mgr.rd.delete_torrent(id).await {
+                    Ok(()) => tracing::info!("Deleted RD error torrent {} ({})", id, name),
+                    Err(e) => tracing::warn!("delete_torrent {} failed: {}", id, e),
+                }
+            }
+        }
         for (id, name) in errored_ids {
             tracing::debug!("Skipping errored torrent {} ({})", id, name);
+        }
+    }
+
+    let stalled_mins = mgr.config.load().repair.stalled_download_mins.max(1);
+    for t in &fresh {
+        if t.status != "downloading" {
+            continue;
+        }
+        if !is_stalled_download_from_list(t, stalled_mins) {
+            continue;
+        }
+        if rd_id_belongs_to_under_repair(mgr, &t.id) {
+            tracing::info!("Skip stalled delete {} ({}) — under_repair", t.id, t.name);
+            continue;
+        }
+        match mgr.rd.delete_torrent(&t.id).await {
+            Ok(()) => tracing::warn!(
+                "Deleted stalled downloading torrent {} ({}, {}%)",
+                t.id,
+                t.name,
+                t.progress
+            ),
+            Err(e) => tracing::warn!("delete_torrent stalled {} failed: {}", t.id, e),
         }
     }
 
@@ -138,6 +182,9 @@ async fn run_once(mgr: &TorrentManager) -> anyhow::Result<()> {
             info: None,
             state: TorrentState::Ok,
             unrepairable_reason: None,
+            last_repaired_at: None,
+            file_states: None,
+            under_repair_started_at: None,
         });
         changed_paths.push(format!("__all__/{}", key));
         mgr.torrents.insert(key.clone(), mt.clone());
@@ -150,13 +197,25 @@ async fn run_once(mgr: &TorrentManager) -> anyhow::Result<()> {
         let existing_val = mgr.torrents.get(&key).map(|r| r.value().clone());
 
         if let Some(existing) = existing_val {
+            let rd_ids_changed = existing.rd_ids.len() != ids.len()
+                || ids.iter().any(|id| !existing.rd_ids.contains(id))
+                || existing.rd_ids.iter().any(|id| !ids.contains(id));
+            // New RD id after re-add/repair: drop stale `TorrentInfo` (links/files differ).
+            let info = if rd_ids_changed {
+                None
+            } else {
+                existing.info.clone()
+            };
             let updated = Arc::new(ManagedTorrent {
                 access_key: key.clone(),
                 rd_ids: ids.clone(),
                 torrent: torrent.clone(),
-                info: existing.info.clone(),
+                info,
                 state: existing.state.clone(),
                 unrepairable_reason: existing.unrepairable_reason.clone(),
+                last_repaired_at: existing.last_repaired_at,
+                file_states: existing.file_states.clone(),
+                under_repair_started_at: existing.under_repair_started_at,
             });
             changed_paths.push(format!("__all__/{}", key));
             mgr.torrents.insert(key.clone(), updated.clone());
@@ -165,6 +224,14 @@ async fn run_once(mgr: &TorrentManager) -> anyhow::Result<()> {
     }
 
     for key in &removed_keys {
+        if mgr
+            .torrents
+            .get(key)
+            .is_some_and(|e| skip_local_remove_for_state(e.state.clone()))
+        {
+            tracing::info!("Refresh: skip remove {} (still under_repair locally)", key);
+            continue;
+        }
         changed_paths.push(format!("__all__/{}", key));
         mgr.torrents.remove(key);
     }

@@ -8,3 +8,4 @@ pub mod torrent;
 
 pub mod error;
 pub mod rd;
+pub mod repair;

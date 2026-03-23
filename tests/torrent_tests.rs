@@ -34,6 +34,9 @@ fn library_paths_for_v1() {
         info: None,
         state: TorrentState::Ok,
         unrepairable_reason: None,
+        last_repaired_at: None,
+        file_states: None,
+        under_repair_started_at: None,
     };
     // TorrentManager::library_paths_for is on the manager; we test the convention here
     let paths = vec![format!("__all__/{}", mt.access_key)];

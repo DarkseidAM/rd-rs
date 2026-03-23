@@ -4,6 +4,8 @@
 //! serves from the disk cache (HTTP-filling missing ranges), and implements
 //! transparent corrupted-link detection with retry.
 
+use std::time::{Duration, Instant};
+
 use fuse3::{Errno, Result as FuseResult, raw::prelude::ReplyData};
 
 use crate::cache::CacheReadError;
@@ -54,6 +56,35 @@ pub async fn read(
         });
     }
 
+    if mt
+        .file_states
+        .as_ref()
+        .is_some_and(|fs| fs.get(&file.path).is_some_and(|s| s == "broken"))
+    {
+        let log_key = format!("{access_key}\x1f{}", file.path);
+        let now = Instant::now();
+        let emit = fs
+            .broken_read_warn_ts
+            .get(&log_key)
+            .map(|t| now.duration_since(*t.value()) >= Duration::from_secs(60))
+            .unwrap_or(true);
+        if emit {
+            fs.broken_read_warn_ts.insert(log_key, now);
+            tracing::warn!(
+                path = %file.path,
+                key = %access_key,
+                "fuse read: file marked broken in file_states (skipping unrestrict); clear with repair or edit DB if wrong"
+            );
+        } else {
+            tracing::debug!(
+                path = %file.path,
+                key = %access_key,
+                "fuse read: file marked broken, skip unrestrict"
+            );
+        }
+        return Err(Errno::from(libc::ENOENT));
+    }
+
     // Pick the right link: torrent links are 1:1 with selected files.
     let link_idx = file_idx.min(ti.links.len().saturating_sub(1));
     let torrent_link = ti
@@ -98,20 +129,63 @@ pub async fn read(
         let download = match fs.rd.unrestrict_link(unrestrict_cache, &torrent_link).await {
             Ok(d) => d,
             Err(e) => {
+                let is_fatal = match &e {
+                    crate::rd::client::RdError::Api(api_err) => !api_err.should_retry(),
+                    _ => false,
+                };
+
                 tracing::warn!(
                     attempt,
                     link = %torrent_link,
+                    is_fatal,
                     "unrestrict failed: {e:#}"
                 );
+
+                if is_fatal {
+                    tracing::error!(link = %torrent_link, "fatal unrestrict error, queuing repair");
+                    crate::rd::RealDebrid::clear_unrestrict_cache(unrestrict_cache, &torrent_link);
+                    let tm = fs.torrent_manager.clone();
+                    let ak = access_key.clone();
+                    let file_path = file.path.clone();
+                    if !tm.fuse_begin_fatal_read_repair(&ak, &file_path).await {
+                        return Err(Errno::from(libc::ENOENT));
+                    }
+                    async {
+                        // `unrepairable_reason` is for cascade “won’t fix” outcomes; if we set it here,
+                        // [`RepairEngine::repair_one_torrent`] skips the torrent entirely (no repair run).
+                        if let Err(err) = tm
+                            .update_torrent_state(&ak, crate::db::TorrentState::Broken, None)
+                            .await
+                        {
+                            tracing::error!(
+                                "Failed to set Broken after fatal unrestrict for {}: {}",
+                                ak,
+                                err
+                            );
+                        }
+                        let _ = tm.mark_file_broken(&ak, &file_path).await;
+                        tm.enqueue_repair(ak.clone()).await;
+                    }
+                    .await;
+                    tm.fuse_end_fatal_read_repair(&ak, &file_path).await;
+                    return Err(Errno::from(libc::ENOENT));
+                }
+
                 continue;
             }
         };
+
+        let path_ext = std::path::Path::new(&file.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase());
+        let dl_ext = download.extension().map(|s| s.to_ascii_lowercase());
 
         // Corrupted-link detection (commit 00ed4714):
         // filesize mismatch AND extension mismatch → bad link, not just a CDN redirect.
         if download.filesize != 0
             && download.filesize as u64 != file_size
-            && (download.extension() != Some("mkv"))
+            && dl_ext.as_deref() != path_ext.as_deref()
         {
             tracing::warn!(
                 link = %torrent_link,
@@ -120,7 +194,30 @@ pub async fn read(
                 "corrupted link detected — clearing cache, queuing repair"
             );
             crate::rd::RealDebrid::clear_unrestrict_cache(unrestrict_cache, &torrent_link);
-            // TODO: enqueue_repair (repair engine: Weeks 7–9)
+
+            let tm = fs.torrent_manager.clone();
+            let ak = access_key.clone();
+            let file_path = file.path.clone();
+            if !tm.fuse_begin_fatal_read_repair(&ak, &file_path).await {
+                return Err(Errno::from(libc::ENOENT));
+            }
+            async {
+                if let Err(e) = tm
+                    .update_torrent_state(&ak, crate::db::TorrentState::Broken, None)
+                    .await
+                {
+                    tracing::error!(
+                        "Failed to set Broken after corrupted link for {}: {}",
+                        ak,
+                        e
+                    );
+                }
+                let _ = tm.mark_file_broken(&ak, &file_path).await;
+                tm.enqueue_repair(ak.clone()).await;
+            }
+            .await;
+            tm.fuse_end_fatal_read_repair(&ak, &file_path).await;
+
             return Err(Errno::from(libc::ENOENT));
         }
 

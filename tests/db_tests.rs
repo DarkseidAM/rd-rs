@@ -12,19 +12,21 @@ fn make_row(key: &str) -> TorrentRow {
         file_states: None,
         last_seen_at: Some(1_700_000_000),
         last_repaired_at: None,
+        under_repair_started_at: None,
     }
 }
 
 #[tokio::test]
-async fn schema_creates_both_tables() {
+async fn schema_creates_core_tables() {
     let db = Db::new_in_memory().await.unwrap();
     db.init_schema().await.unwrap();
     let c1 = db.table_count("torrents").await.unwrap();
     let c2 = db.table_count("repair_jobs").await.unwrap();
+    let c3 = db.table_count("app_meta").await.unwrap();
     assert_eq!(
-        c1 + c2,
+        c1 + c2 + c3,
         0,
-        "both tables should exist after init_schema and be empty"
+        "torrents, repair_jobs, app_meta should exist and be empty"
     );
 }
 

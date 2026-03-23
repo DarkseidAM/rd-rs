@@ -48,7 +48,7 @@ impl RealDebrid {
         cache.remove(link);
     }
 
-    pub async fn select_torrent_files(&self, id: &str, files: &str) -> Result<()> {
+    pub async fn select_torrent_files(&self, id: &str, files: &str) -> Result<(), RdError> {
         let url = format!("https://api.real-debrid.com/rest/1.0/torrents/selectFiles/{id}");
         let body = format!("files={files}");
         self.api_client
@@ -59,21 +59,19 @@ impl RealDebrid {
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .body(body.clone())
             })
-            .await
-            .context("select_torrent_files")?;
+            .await?;
         Ok(())
     }
 
-    pub async fn delete_torrent(&self, id: &str) -> Result<()> {
+    pub async fn delete_torrent(&self, id: &str) -> Result<(), RdError> {
         let url = format!("https://api.real-debrid.com/rest/1.0/torrents/delete/{id}");
         self.api_client
             .execute(|| self.api_client.client.delete(&url))
-            .await
-            .context("delete_torrent")?;
+            .await?;
         Ok(())
     }
 
-    pub async fn add_magnet(&self, hash: &str) -> Result<MagnetResponse> {
+    pub async fn add_magnet(&self, hash: &str) -> Result<MagnetResponse, RdError> {
         let body = format!("magnet=magnet%3A%3Fxt%3Durn%3Abtih%3A{hash}");
         let resp = self
             .api_client
@@ -84,9 +82,8 @@ impl RealDebrid {
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .body(body.clone())
             })
-            .await
-            .context("add_magnet")?;
-        let mr: MagnetResponse = resp.json().await.context("add_magnet: decode")?;
+            .await?;
+        let mr: MagnetResponse = resp.json().await.map_err(RdError::Network)?;
         Ok(mr)
     }
 

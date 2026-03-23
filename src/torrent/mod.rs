@@ -4,14 +4,26 @@
 //!   - An in-memory `DashMap` of every torrent keyed by `access_key`
 //!   - A background refresh loop (15 s default) that syncs from the RD API
 //!   - A debounced `on_library_update` hook worker
+//!
+//! ## `file_states` concurrency
+//!
+//! All mutations to [`ManagedTorrent::file_states`] go through `TorrentManager` (`mark_file_broken`,
+//! `persist_torrent_snapshot`, refresh merge, repair preflight). We do not model zurg’s per-file
+//! FSM mutex graph; a single writer discipline keeps FUSE, refresh, and repair consistent.
 
+mod fuse_read_coalesce;
 pub mod hook;
 pub mod refresh;
+mod repair_enqueue;
+mod state_ops;
 
+pub use repair_enqueue::EnqueueRepairAllOptions;
+
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
@@ -45,6 +57,15 @@ pub struct ManagedTorrent {
 
     /// Reason the torrent cannot be repaired (if unrepairable).
     pub unrepairable_reason: Option<String>,
+
+    /// Unix time when a repair last completed successfully (`state` → ok).
+    pub last_repaired_at: Option<i64>,
+
+    /// Per-file health from repair / FUSE (`path` → `ok` | `broken`), persisted as JSON.
+    pub file_states: Option<HashMap<String, String>>,
+
+    /// When current `under_repair` began (for zurg-style repair timeout).
+    pub under_repair_started_at: Option<i64>,
 }
 
 impl ManagedTorrent {
@@ -104,6 +125,14 @@ pub struct TorrentManager {
 
     /// CancellationToken — call `.cancel()` to stop all background tasks.
     pub(crate) shutdown: CancellationToken,
+
+    /// Wake the repair engine (priority keys).
+    pub(crate) repair_notify: Arc<Notify>,
+
+    pub(crate) repair_queue: Arc<Mutex<VecDeque<String>>>,
+
+    /// One in-flight “fatal read → mark broken + enqueue repair” handler per `(access_key, file_path)`.
+    pub(crate) fuse_fatal_read_locks: Arc<Mutex<HashSet<(String, String)>>>,
 }
 
 impl TorrentManager {
@@ -119,6 +148,9 @@ impl TorrentManager {
         let unrestrict_cache = crate::rd::api::new_unrestrict_cache();
         let shutdown = CancellationToken::new();
         let (hook_tx, hook_rx) = mpsc::channel(256);
+        let repair_notify = Arc::new(Notify::new());
+        let repair_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let fuse_fatal_read_locks = Arc::new(Mutex::new(HashSet::new()));
 
         let mgr = Self {
             torrents,
@@ -129,6 +161,9 @@ impl TorrentManager {
             hook_tx,
             hook_rx: std::sync::Mutex::new(Some(hook_rx)),
             shutdown,
+            repair_notify,
+            repair_queue,
+            fuse_fatal_read_locks,
         };
 
         // Warm from SQLite before first RD sync (< 1s for 20K rows)
@@ -186,6 +221,10 @@ impl TorrentManager {
             .map_err(|e| anyhow::anyhow!("DB load error: {}", e))?;
 
         for row in rows {
+            let file_states = row
+                .file_states
+                .as_ref()
+                .and_then(|s| serde_json::from_str(s).ok());
             let mt = ManagedTorrent {
                 access_key: row.access_key.clone(),
                 rd_ids: row.rd_ids.clone(),
@@ -201,11 +240,13 @@ impl TorrentManager {
                 info: None,
                 state: row.state.clone(),
                 unrepairable_reason: row.unrepairable_reason.clone(),
+                last_repaired_at: row.last_repaired_at,
+                file_states,
+                under_repair_started_at: row.under_repair_started_at,
             };
             if row.state == TorrentState::UnderRepair {
-                // In Phase 3, this will be pushed to the RepairManager queue.
-                tracing::warn!(
-                    "Startup: Torrent {} is under_repair (awaiting repair loop)",
+                tracing::info!(
+                    "Startup: torrent {} was under_repair (repair engine will resume)",
                     row.access_key
                 );
             }
@@ -230,6 +271,48 @@ impl TorrentManager {
     /// v1: only `__all__/<access_key>` (directory-level notification).
     pub fn library_paths_for(&self, mt: &ManagedTorrent) -> Vec<String> {
         vec![format!("__all__/{}", mt.access_key)]
+    }
+
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.shutdown.clone()
+    }
+
+    /// Load `TorrentInfo` for this key if missing (FUSE / repair).
+    pub async fn ensure_torrent_info(&self, access_key: &str) -> Option<Arc<ManagedTorrent>> {
+        let mt = self.torrents.get(access_key)?.value().clone();
+        if mt.info.is_some() {
+            return Some(mt);
+        }
+        let rd_id = mt.rd_ids.first()?.clone();
+        let info: TorrentInfo = match self.rd.get_torrent_info(&rd_id).await {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load torrent info for {} ({}): {}",
+                    access_key,
+                    rd_id,
+                    e
+                );
+                return Some(mt);
+            }
+        };
+        let updated = Arc::new(ManagedTorrent {
+            info: Some(info),
+            ..(*mt).clone()
+        });
+        self.torrents
+            .insert(access_key.to_string(), updated.clone());
+        Some(updated)
+    }
+
+    /// Priority repair queue (deduped). Repair engine drains this before periodic scans.
+    pub async fn enqueue_repair(&self, access_key: String) {
+        let mut q = self.repair_queue.lock().await;
+        if !q.iter().any(|k| k == &access_key) {
+            q.push_back(access_key);
+        }
+        drop(q);
+        self.repair_notify.notify_one();
     }
 
     // ─── Shutdown ─────────────────────────────────────────────────────────────

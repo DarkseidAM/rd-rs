@@ -10,7 +10,6 @@ use fuse3::raw::prelude::*;
 
 use crate::fuse::consts::INODE_FILE_BASE;
 use crate::fuse::consts::INODE_TORRENT_BASE;
-use crate::rd::types::TorrentInfo;
 use crate::torrent::ManagedTorrent;
 
 use super::fs::RdFs;
@@ -130,29 +129,6 @@ impl RdFs {
         &self,
         access_key: &str,
     ) -> Option<Arc<ManagedTorrent>> {
-        let mt = self.torrents.get(access_key)?.value().clone();
-        if mt.info.is_some() {
-            return Some(mt);
-        }
-        let rd_id = mt.rd_ids.first()?;
-        let info: TorrentInfo = match self.rd.get_torrent_info(rd_id).await {
-            Ok(i) => i,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to load torrent info for {} ({}): {}",
-                    access_key,
-                    rd_id,
-                    e
-                );
-                return Some(mt);
-            }
-        };
-        let updated = Arc::new(ManagedTorrent {
-            info: Some(info),
-            ..(*mt).clone()
-        });
-        self.torrents
-            .insert(access_key.to_string(), updated.clone());
-        Some(updated)
+        self.torrent_manager.ensure_torrent_info(access_key).await
     }
 }
