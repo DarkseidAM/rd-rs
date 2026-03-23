@@ -117,15 +117,15 @@ impl RangeDb {
         if keys.is_empty() {
             return Ok(0);
         }
+        let keys_json =
+            serde_json::to_string(keys).context("serialize cache keys for batch delete")?;
         let mut conn = self.conn.lock().expect("range db mutex poisoned");
         let tx = conn.transaction()?;
-        let mut deleted = 0usize;
-        {
-            let mut stmt = tx.prepare("DELETE FROM cache_ranges WHERE cache_key = ?1")?;
-            for key in keys {
-                deleted += stmt.execute(params![*key])?;
-            }
-        }
+        let deleted = tx.execute(
+            "DELETE FROM cache_ranges
+             WHERE cache_key IN (SELECT value FROM json_each(?1))",
+            params![keys_json],
+        )?;
         tx.commit()?;
         Ok(deleted)
     }
