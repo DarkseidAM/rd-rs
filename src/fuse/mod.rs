@@ -11,8 +11,8 @@
 //!     └── ...
 //! ```
 //!
-//! VFS `read()` is stubbed in Phase 2 — Phase 3 adds the HTTP range + disk
-//! cache layer.
+//! VFS `read()` uses the disk cache, HTTP range fill, and per-fd read buffering
+//! (`vfs.buffer_size`).
 
 pub(crate) mod consts;
 pub mod fs;
@@ -21,6 +21,7 @@ mod fs_lookup;
 mod fs_readdir;
 mod fs_readdirplus;
 pub(crate) mod read;
+pub mod vfs_read_buffer;
 
 pub use consts::{INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE};
 pub use fs::RdFs;

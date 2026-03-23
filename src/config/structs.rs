@@ -130,6 +130,9 @@ pub struct VfsConfig {
     #[serde(default = "defaults::default_cache_min_free")]
     pub cache_min_free_space: String,
 
+    /// RAM window per open file: bytes fetched from cache/HTTP for this FUSE fd but not yet returned
+    /// in a later `read` (rclone-style `--buffer-size`). Sequential reads consume the front; seek
+    /// drops the window. Effective size is clamped (see `fuse::vfs_read_buffer`).
     #[serde(default = "defaults::default_buffer_size")]
     pub buffer_size: String,
 
@@ -138,9 +141,6 @@ pub struct VfsConfig {
 
     #[serde(default = "defaults::default_chunk_size")]
     pub chunk_size: String,
-
-    #[serde(default = "defaults::default_read_wait")]
-    pub read_wait: String,
 
     #[serde(default = "defaults::default_parallel_streams")]
     pub max_parallel_streams: u32,
@@ -155,7 +155,6 @@ impl Default for VfsConfig {
             buffer_size: "256M".into(),
             read_ahead: "128M".into(),
             chunk_size: "4M".into(),
-            read_wait: "5ms".into(),
             max_parallel_streams: 8,
         }
     }
