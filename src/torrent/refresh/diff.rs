@@ -77,8 +77,12 @@ pub fn diff(
     }
 }
 
-pub(super) fn torrent_to_row(mt: &ManagedTorrent) -> TorrentRow {
+pub fn torrent_to_row(mt: &ManagedTorrent) -> TorrentRow {
     let now = chrono::Utc::now().timestamp();
+    let file_states = mt
+        .file_states
+        .as_ref()
+        .and_then(|m| serde_json::to_string(m).ok());
     TorrentRow {
         access_key: mt.access_key.clone(),
         rd_ids: mt.rd_ids.clone(),
@@ -86,8 +90,9 @@ pub(super) fn torrent_to_row(mt: &ManagedTorrent) -> TorrentRow {
         name: mt.torrent.name.clone(),
         state: mt.state.clone(),
         unrepairable_reason: mt.unrepairable_reason.clone(),
-        file_states: None,
+        file_states,
         last_seen_at: Some(now),
-        last_repaired_at: None,
+        last_repaired_at: mt.last_repaired_at,
+        under_repair_started_at: mt.under_repair_started_at,
     }
 }

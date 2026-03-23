@@ -36,7 +36,7 @@ use crate::config::Config;
 use crate::fuse::consts::{INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE};
 use crate::rd::RealDebrid;
 use crate::rd::api::{UnrestrictCache, new_unrestrict_cache};
-use crate::torrent::ManagedTorrent;
+use crate::torrent::{ManagedTorrent, TorrentManager};
 use arc_swap::ArcSwap;
 
 // ─── RdFs struct ─────────────────────────────────────────────────────────────
@@ -45,6 +45,7 @@ type CachedAllDir = std::sync::RwLock<(Instant, Arc<Vec<(String, OsString)>>)>;
 
 pub struct RdFs {
     pub torrents: Arc<DashMap<String, Arc<ManagedTorrent>>>,
+    pub torrent_manager: Arc<TorrentManager>,
     pub rd: Arc<RealDebrid>,
     pub config: Arc<ArcSwap<Config>>,
     pub cache: Arc<Cache>,
@@ -53,17 +54,21 @@ pub struct RdFs {
     pub(crate) inode_to_key: DashMap<u64, String>,
     pub(crate) next_torrent_inode: AtomicU64,
     pub(crate) cached_all_dir: CachedAllDir,
+    /// Throttle `warn!` when reads skip a file marked `broken` in `file_states` (otherwise silent at `info`).
+    pub(crate) broken_read_warn_ts: DashMap<String, Instant>,
 }
 
 impl RdFs {
     pub fn new(
-        torrents: Arc<DashMap<String, Arc<ManagedTorrent>>>,
+        torrent_manager: Arc<TorrentManager>,
         rd: Arc<RealDebrid>,
         config: Arc<ArcSwap<Config>>,
         cache: Arc<Cache>,
     ) -> Self {
+        let torrents = torrent_manager.torrents.clone();
         Self {
             torrents,
+            torrent_manager,
             rd,
             config,
             cache,
@@ -75,6 +80,7 @@ impl RdFs {
                 std::time::Instant::now() - Duration::from_secs(600),
                 Arc::new(Vec::new()),
             )),
+            broken_read_warn_ts: DashMap::new(),
         }
     }
 }

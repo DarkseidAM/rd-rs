@@ -1,4 +1,4 @@
-use rd_rs::rd::client::{ApiError, DownloadError, backoff};
+use rd_rs::rd::client::{ApiError, DownloadError, RdError, backoff};
 use std::time::Duration;
 
 #[test]
@@ -45,4 +45,28 @@ fn download_error_from_header() {
         DownloadError::LinkUnavailable { status: 404 }
     ));
     assert!(e404.should_refresh_via_unrestrict());
+}
+
+#[test]
+fn rd_error_bandwidth_limited_detection() {
+    assert!(
+        RdError::Api(ApiError::TrafficExhausted {
+            message: "x".into(),
+        })
+        .is_bandwidth_limited()
+    );
+    assert!(
+        RdError::Api(ApiError::FairUsageLimit {
+            message: "x".into(),
+        })
+        .is_bandwidth_limited()
+    );
+    assert!(RdError::Download(DownloadError::BytesLimitReached).is_bandwidth_limited());
+    assert!(
+        !RdError::Api(ApiError::Other {
+            code: 9,
+            message: "nope".into(),
+        })
+        .is_bandwidth_limited()
+    );
 }

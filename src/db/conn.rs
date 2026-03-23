@@ -47,15 +47,16 @@ impl Db {
                 conn.execute_batch(
                     r#"
             CREATE TABLE IF NOT EXISTS torrents (
-                access_key       TEXT PRIMARY KEY,
-                rd_ids           TEXT NOT NULL,
-                hash             TEXT,
-                name             TEXT,
-                state            TEXT NOT NULL DEFAULT 'ok',
-                unrepairable     TEXT,
-                file_states      TEXT,
-                last_seen_at     INTEGER,
-                last_repaired_at INTEGER
+                access_key               TEXT PRIMARY KEY,
+                rd_ids                   TEXT NOT NULL,
+                hash                     TEXT,
+                name                     TEXT,
+                state                    TEXT NOT NULL DEFAULT 'ok',
+                unrepairable             TEXT,
+                file_states              TEXT,
+                last_seen_at             INTEGER,
+                last_repaired_at         INTEGER,
+                under_repair_started_at  INTEGER
             );
 
             CREATE INDEX IF NOT EXISTS idx_torrents_state
@@ -75,13 +76,68 @@ impl Db {
 
             CREATE INDEX IF NOT EXISTS idx_repair_jobs_torrent
                 ON repair_jobs(torrent_key);
+
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key   TEXT PRIMARY KEY,
+                value INTEGER NOT NULL
+            );
             "#,
                 )?;
+                // Existing DBs from before `under_repair_started_at`:
+                let _ = conn.execute(
+                    "ALTER TABLE torrents ADD COLUMN under_repair_started_at INTEGER",
+                    [],
+                );
                 Ok::<(), rusqlite::Error>(())
             })
             .await?;
         tracing::debug!("SQLite schema initialised");
         Ok(())
+    }
+
+    /// Persisted Unix time of the last **completed** periodic repair cycle (for throttling).
+    pub const META_LAST_REPAIR_CYCLE_UNIX: &'static str = "last_repair_cycle_unix";
+
+    pub fn get_meta_i64_conn(
+        conn: &rusqlite::Connection,
+        key: &str,
+    ) -> rusqlite::Result<Option<i64>> {
+        let mut stmt = conn.prepare("SELECT value FROM app_meta WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_meta_i64_conn(
+        conn: &mut rusqlite::Connection,
+        key: &str,
+        value: i64,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "INSERT INTO app_meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub async fn get_meta_i64(&self, key: &str) -> Result<Option<i64>> {
+        let key = key.to_string();
+        self.conn
+            .call(move |conn| Self::get_meta_i64_conn(conn, &key))
+            .await
+            .map_err(|e| anyhow::anyhow!("meta get: {e}"))
+    }
+
+    pub async fn set_meta_i64(&self, key: &str, value: i64) -> Result<()> {
+        let key = key.to_string();
+        self.conn
+            .call(move |conn| Self::set_meta_i64_conn(conn, &key, value))
+            .await
+            .map_err(|e| anyhow::anyhow!("meta set: {e}"))
     }
 
     pub async fn upsert_torrent(&self, row: &TorrentRow) -> Result<()> {
@@ -93,8 +149,8 @@ impl Db {
                 conn.execute(
                     r#"INSERT OR REPLACE INTO torrents
                (access_key, rd_ids, hash, name, state, unrepairable, file_states,
-                last_seen_at, last_repaired_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
+                last_seen_at, last_repaired_at, under_repair_started_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
                     params![
                         row_cloned.access_key,
                         rd_ids_json,
@@ -105,6 +161,7 @@ impl Db {
                         row_cloned.file_states,
                         row_cloned.last_seen_at,
                         row_cloned.last_repaired_at,
+                        row_cloned.under_repair_started_at,
                     ],
                 )?;
                 Ok::<(), rusqlite::Error>(())
@@ -122,21 +179,14 @@ impl Db {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO torrents (
                     access_key, rd_ids, hash, name, state,
-                    unrepairable, file_states, last_seen_at, last_repaired_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    unrepairable, file_states, last_seen_at, last_repaired_at,
+                    under_repair_started_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?;
             for row in torrents {
                 let rd_ids_json = serde_json::to_string(&row.rd_ids)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                let file_states_json = row.file_states.as_ref().map(|fs| {
-                    serde_json::to_string(fs)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-                });
-                let file_states_val = match file_states_json {
-                    Some(Ok(v)) => Some(v),
-                    Some(Err(e)) => return Err(e.into()),
-                    None => None,
-                };
+                // `TorrentRow.file_states` is already JSON from `torrent_to_row` (do not re-encode).
                 stmt.execute(params![
                     row.access_key,
                     rd_ids_json,
@@ -144,9 +194,10 @@ impl Db {
                     row.name,
                     row.state.to_string(),
                     row.unrepairable_reason,
-                    file_states_val,
+                    row.file_states.clone(),
                     row.last_seen_at,
                     row.last_repaired_at,
+                    row.under_repair_started_at,
                 ])?;
             }
         }
@@ -171,13 +222,17 @@ impl Db {
             file_states: row.get(6)?,
             last_seen_at: row.get(7)?,
             last_repaired_at: row.get(8)?,
+            under_repair_started_at: row.get(9)?,
         })
     }
 
     pub fn get_all_torrents_conn(
         conn: &rusqlite::Connection,
     ) -> Result<Vec<TorrentRow>, rusqlite::Error> {
-        let mut stmt = conn.prepare("SELECT * FROM torrents")?;
+        let mut stmt = conn.prepare(
+            "SELECT access_key, rd_ids, hash, name, state, unrepairable, file_states, \
+             last_seen_at, last_repaired_at, under_repair_started_at FROM torrents",
+        )?;
 
         let rows = stmt
             .query_map([], Self::row_to_torrent)?
@@ -194,45 +249,58 @@ impl Db {
     }
 
     pub async fn insert_repair_job(&self, job: &RepairJobRow) -> Result<()> {
+        Self::insert_repair_job_on_conn(&self.conn, job).await
+    }
+
+    /// Same as [`insert_repair_job`] for callers holding `Arc<tokio_rusqlite::Connection>`.
+    pub async fn insert_repair_job_on_conn(
+        conn: &tokio_rusqlite::Connection,
+        job: &RepairJobRow,
+    ) -> Result<()> {
         let job_cloned = job.clone();
-        self.conn
-            .call(move |conn| -> rusqlite::Result<()> {
-                conn.execute(
-                    r#"INSERT OR REPLACE INTO repair_jobs
+        conn.call(move |conn| -> rusqlite::Result<()> {
+            conn.execute(
+                r#"INSERT OR REPLACE INTO repair_jobs
                    (id, torrent_key, strategy, status, started_at, completed_at)
                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
-                    params![
-                        job_cloned.id,
-                        job_cloned.torrent_key,
-                        job_cloned.strategy,
-                        job_cloned.status.to_string(),
-                        job_cloned.started_at,
-                        job_cloned.completed_at,
-                    ],
-                )?;
-                Ok::<(), rusqlite::Error>(())
-            })
-            .await?;
+                params![
+                    job_cloned.id,
+                    job_cloned.torrent_key,
+                    job_cloned.strategy,
+                    job_cloned.status.to_string(),
+                    job_cloned.started_at,
+                    job_cloned.completed_at,
+                ],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await?;
         Ok(())
     }
 
     pub async fn update_repair_job(&self, job: &RepairJobRow) -> Result<()> {
+        Self::update_repair_job_on_conn(&self.conn, job).await
+    }
+
+    pub async fn update_repair_job_on_conn(
+        conn: &tokio_rusqlite::Connection,
+        job: &RepairJobRow,
+    ) -> Result<()> {
         let job_cloned = job.clone();
-        self.conn
-            .call(move |conn| -> rusqlite::Result<()> {
-                conn.execute(
-                    r#"UPDATE repair_jobs SET strategy = ?1, status = ?2,
+        conn.call(move |conn| -> rusqlite::Result<()> {
+            conn.execute(
+                r#"UPDATE repair_jobs SET strategy = ?1, status = ?2,
                    completed_at = ?3 WHERE id = ?4"#,
-                    params![
-                        job_cloned.strategy,
-                        job_cloned.status.to_string(),
-                        job_cloned.completed_at,
-                        job_cloned.id,
-                    ],
-                )?;
-                Ok::<(), rusqlite::Error>(())
-            })
-            .await?;
+                params![
+                    job_cloned.strategy,
+                    job_cloned.status.to_string(),
+                    job_cloned.completed_at,
+                    job_cloned.id,
+                ],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await?;
         Ok(())
     }
 

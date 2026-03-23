@@ -28,6 +28,9 @@ fn make_managed(t: &Torrent, rd_ids: Vec<String>) -> Arc<ManagedTorrent> {
         info: None,
         state: TorrentState::Ok,
         unrepairable_reason: None,
+        last_repaired_at: None,
+        file_states: None,
+        under_repair_started_at: None,
     })
 }
 

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::rd::RealDebrid;
+use crate::rd::client::RdError;
 use crate::rd::types::{Torrent, TorrentInfo, User};
 
 impl RealDebrid {
@@ -108,14 +109,13 @@ impl RealDebrid {
         Ok(all)
     }
 
-    pub async fn get_torrent_info(&self, id: &str) -> Result<TorrentInfo> {
+    pub async fn get_torrent_info(&self, id: &str) -> Result<TorrentInfo, RdError> {
         let url = format!("https://api.real-debrid.com/rest/1.0/torrents/info/{id}");
         let resp = self
             .api_client
             .execute(|| self.api_client.client.get(&url))
-            .await
-            .context("get_torrent_info")?;
-        let info: TorrentInfo = resp.json().await.context("get_torrent_info: decode")?;
+            .await?;
+        let info: TorrentInfo = resp.json().await.map_err(RdError::Network)?;
         Ok(info)
     }
 }

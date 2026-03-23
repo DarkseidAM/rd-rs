@@ -109,4 +109,13 @@ impl RdError {
     pub fn should_refresh_via_unrestrict(&self) -> bool {
         matches!(self, Self::Download(d) if d.should_refresh_via_unrestrict())
     }
+
+    /// True when repair should pause for this torrent and retry a later cycle (no unrepairable mark).
+    pub fn is_bandwidth_limited(&self) -> bool {
+        matches!(
+            self,
+            Self::Api(ApiError::TrafficExhausted { .. } | ApiError::FairUsageLimit { .. })
+                | Self::Download(DownloadError::BytesLimitReached)
+        )
+    }
 }
