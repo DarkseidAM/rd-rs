@@ -20,6 +20,9 @@ impl RealDebrid {
     /// `Content-Range` header (same policy as before, scoped to range GETs only;
     /// `verify_head` uses HEAD and must not trigger this path).
     ///
+    /// If the status is `200 OK` without `Content-Range`, returns
+    /// [`RdError::RangeNotSupported`] immediately (unrestrict cannot fix that).
+    ///
     /// Caller must hold `connection_semaphore` (see cache worker); this method does not acquire it.
     pub async fn http_range_get(
         &self,
@@ -44,7 +47,7 @@ impl RealDebrid {
                     "CDN returned 200 (full body) for Range GET; \
                      server does not support Range — failing fast"
                 );
-                return Err(RdError::MaxRetriesExceeded);
+                return Err(RdError::RangeNotSupported);
             }
             if attempt >= max_retries {
                 return Err(RdError::MaxRetriesExceeded);

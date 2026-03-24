@@ -16,6 +16,11 @@ pub(crate) const NO_PROGRESS_CHECK: Duration = Duration::from_secs(1);
 /// Max retries before giving up and returning an error to FUSE.
 pub(crate) const MAX_DOWNLOAD_RETRIES: u32 = 3;
 
+#[inline]
+fn no_progress_timeout_secs() -> u64 {
+    NO_PROGRESS_TIMEOUT.as_secs()
+}
+
 /// Arguments for `run_downloader`, grouped to stay under clippy's arg-count limit.
 pub(crate) struct DownloaderArgs {
     pub start: u64,
@@ -135,7 +140,12 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                             let last = lp_clone.load(Ordering::Relaxed);
                             let now = chrono::Utc::now().timestamp_millis();
                             if (now - last) as u64 >= NO_PROGRESS_TIMEOUT.as_millis() as u64 {
-                                tracing::warn!("no-progress watchdog fired after 45s stall");
+                                let secs = no_progress_timeout_secs();
+                                tracing::warn!(
+                                    stall_timeout_secs = secs,
+                                    "no-progress watchdog fired after {}s stall",
+                                    secs
+                                );
                                 let _ = watchdog_tx;
                                 return;
                             }
@@ -193,15 +203,18 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                         }
                         _ = &mut watchdog_rx => {
                             watchdog.abort();
+                            let secs = no_progress_timeout_secs();
                             tracing::warn!(
                                 chunk_start,
                                 range = %range_header,
-                                "stream headers stalled for 45s"
+                                stall_timeout_secs = secs,
+                                "stream headers stalled for {}s",
+                                secs
                             );
                             retries += 1;
                             if retries >= MAX_DOWNLOAD_RETRIES {
                                 return Err(anyhow::anyhow!(
-                                    "stream stalled (headers): no progress for 45s at {chunk_start} ({range_header})"
+                                    "stream stalled (headers): no progress for {secs}s at {chunk_start} ({range_header})"
                                 ));
                             }
                             multiplier = 1;
@@ -223,8 +236,10 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                         let chunk_res = tokio::select! {
                             res = resp.chunk() => res,
                             _ = &mut watchdog_rx => {
-                                download_error =
-                                    Some(anyhow::anyhow!("stream body stalled for 45s"));
+                                let secs = no_progress_timeout_secs();
+                                download_error = Some(anyhow::anyhow!(
+                                    "stream body stalled for {secs}s"
+                                ));
                                 break;
                             }
                         };
