@@ -74,22 +74,8 @@ impl RdClient {
             }
 
             if status.is_success() {
-                if self.config.is_download_client
-                    && resp.headers().get(reqwest::header::CONTENT_RANGE).is_none()
-                {
-                    if attempt >= self.config.max_retries {
-                        return Err(RdError::MaxRetriesExceeded);
-                    }
-                    let delay = backoff(attempt, 1);
-                    tracing::info!(attempt, "No Content-Range header, retry in {delay:?}");
-                    sleep(delay).await;
-                    attempt += 1;
-                    continue;
-                }
                 return Ok(resp);
             }
-
-            let status = resp.status();
 
             if resp
                 .headers()

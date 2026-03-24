@@ -70,3 +70,14 @@ fn rd_error_bandwidth_limited_detection() {
         .is_bandwidth_limited()
     );
 }
+
+#[test]
+fn rd_error_range_not_supported_is_not_recoverable_via_unrestrict() {
+    let e = RdError::RangeNotSupported;
+    assert!(!e.should_refresh_via_unrestrict());
+    assert!(!e.is_bandwidth_limited());
+    assert!(
+        e.to_string()
+            .contains("range requests not supported by CDN")
+    );
+}

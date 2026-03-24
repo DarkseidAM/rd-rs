@@ -100,6 +100,9 @@ pub enum RdError {
     Network(#[from] reqwest::Error),
     #[error("request cancelled")]
     Cancelled,
+    /// CDN answered `200 OK` to a `Range` request without `Content-Range` (full body; Range ignored).
+    #[error("range requests not supported by CDN (200 OK without Content-Range)")]
+    RangeNotSupported,
     #[error("max retries exceeded")]
     MaxRetriesExceeded,
 }
