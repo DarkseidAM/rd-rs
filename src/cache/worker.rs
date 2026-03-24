@@ -10,7 +10,7 @@ use tokio::time::{self, Duration};
 
 /// If no bytes are written to cache for this duration, cancel the in-flight
 /// HTTP stream attempt and retry from the same offset.
-pub(crate) const NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(45);
+pub(crate) const NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(15);
 /// How often the no-progress watchdog polls for stall detection.
 pub(crate) const NO_PROGRESS_CHECK: Duration = Duration::from_secs(1);
 /// Max retries before giving up and returning an error to FUSE.

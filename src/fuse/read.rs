@@ -239,9 +239,10 @@ pub async fn read(
                 link = %torrent_link,
                 rd_size = download.filesize,
                 expected = file_size,
-                "corrupted link detected — clearing cache, queuing repair"
+                "corrupted link detected — clearing unrestrict cache and VFS disk cache, queuing repair"
             );
             crate::rd::RealDebrid::clear_unrestrict_cache(unrestrict_cache, &torrent_link);
+            fs.cache.invalidate(&access_key, &sanitized);
 
             let tm = fs.torrent_manager.clone();
             let ak = access_key.clone();

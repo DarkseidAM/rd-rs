@@ -98,6 +98,19 @@ impl Cache {
         Ok(item)
     }
 
+    /// Drop in-memory entry, remove the sparse file, and delete persisted range metadata.
+    pub fn invalidate(&self, access_key: &str, filename: &str) {
+        let key = Self::build_key(access_key, filename);
+        self.items.remove(&key);
+        let path = self.cache_dir.join(access_key).join(filename);
+        if let Err(e) = std::fs::remove_file(&path) {
+            tracing::warn!("cache invalidate: remove {path:?}: {e:#}");
+        }
+        if let Err(e) = self.range_db.delete_keys(&[key.as_str()]) {
+            tracing::warn!("cache invalidate: range db {key}: {e:#}");
+        }
+    }
+
     pub fn record_hit(&self) {
         self.hits.fetch_add(1, Ordering::Relaxed);
     }
