@@ -1,11 +1,13 @@
 //! Background repair loop: throttled periodic scan, priority queue, single-flight sessions.
 
+mod passive_head;
 mod repair_one;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use dashmap::DashMap;
 use tokio::sync::Mutex;
 use tokio::time;
 use tokio_util::sync::CancellationToken;
@@ -25,6 +27,8 @@ pub struct RepairEngine {
     pub config: Arc<ArcSwap<Config>>,
     pub torrent_manager: Arc<TorrentManager>,
     pub(crate) shutdown: CancellationToken,
+    /// Last passive HEAD probe time per `access_key` (throttles `head_check_min_interval_mins`).
+    pub(super) passive_head_last: DashMap<String, std::time::Instant>,
     session: Mutex<()>,
 }
 
@@ -42,6 +46,7 @@ impl RepairEngine {
             config,
             torrent_manager,
             shutdown,
+            passive_head_last: DashMap::new(),
             session: Mutex::new(()),
         }
     }
@@ -76,6 +81,7 @@ impl RepairEngine {
         if periodic {
             let mut skipped_unrepairable = 0usize;
             let mut periodic_eligible = 0usize;
+            let mut head_check_enqueued = 0usize;
             for e in self.torrent_manager.torrents.iter() {
                 let mt = e.value();
                 if mt.unrepairable_reason.is_some() {
@@ -87,9 +93,19 @@ impl RepairEngine {
                     keys.push(mt.access_key.clone());
                 }
             }
+
+            head_check_enqueued += passive_head::append_passive_head_candidates(
+                &self.rd,
+                &self.torrent_manager,
+                &self.passive_head_last,
+                &cfg.repair,
+                &mut keys,
+            )
+            .await;
+
             info!(
                 periodic_eligible,
-                skipped_unrepairable, "Repair engine: periodic candidate scan"
+                skipped_unrepairable, head_check_enqueued, "Repair engine: periodic candidate scan"
             );
         }
 
