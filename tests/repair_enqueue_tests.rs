@@ -61,8 +61,11 @@ async fn one_torrent_tm() -> (TorrentManager, String) {
 #[tokio::test]
 async fn enqueue_repair_all_pushes_all_keys() {
     let (tm, key) = one_torrent_tm().await;
-    tm.enqueue_repair_all(EnqueueRepairAllOptions::default())
-        .await;
+    tm.enqueue_repair_all(EnqueueRepairAllOptions {
+        all: true,
+        ..Default::default()
+    })
+    .await;
     assert_eq!(tm.repair_pending_count().await, 1);
     assert_eq!(tm.repair_peek_front().await.as_deref(), Some(key.as_str()));
 }
@@ -75,6 +78,7 @@ async fn enqueue_repair_all_clears_unrepairable_when_configured() {
         .unwrap();
     tm.enqueue_repair_all(EnqueueRepairAllOptions {
         clear_unrepairable: true,
+        ..Default::default()
     })
     .await;
     let mt = tm.torrents.get(&key).unwrap().value().clone();
@@ -109,8 +113,11 @@ async fn enqueue_repair_front_moves_to_head() {
         }),
     );
 
-    tm.enqueue_repair_all(EnqueueRepairAllOptions::default())
-        .await;
+    tm.enqueue_repair_all(EnqueueRepairAllOptions {
+        all: true,
+        ..Default::default()
+    })
+    .await;
     tm.enqueue_repair_front(&k1, false).await;
 
     assert_eq!(tm.repair_pending_count().await, 2);

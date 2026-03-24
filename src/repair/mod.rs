@@ -61,7 +61,8 @@ impl std::fmt::Display for UnrepairableReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CascadeOutcome {
     /// Repaired; caller should set `ok` and `last_repaired_at`.
-    Success,
+    /// When `new_rd_ids` is set (reinsert / archive-all), caller must persist before marking ok.
+    Success { new_rd_ids: Option<Vec<String>> },
     /// Permanently (for this cycle) unrepairable.
     Unrepairable(UnrepairableReason),
     /// RD API / zurg-style free-form reason (persisted to `unrepairable`).

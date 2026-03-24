@@ -8,11 +8,15 @@ use std::time::{Duration, Instant};
 
 use fuse3::{Errno, Result as FuseResult, raw::prelude::ReplyData};
 
+use bytes::Bytes;
+
 use crate::cache::CacheReadError;
+use crate::config::parse_byte_size;
 use crate::rd::api::UnrestrictCache;
 
 use super::consts::INODE_FILE_BASE;
 use super::fs::RdFs;
+use super::vfs_read_buffer::{PrepareRead, VfsReadBuffer, clamp_buffer_size};
 
 /// Max unrestrict+retry cycles per single `read()` call.
 const MAX_RETRIES: usize = 3;
@@ -20,7 +24,7 @@ const MAX_RETRIES: usize = 3;
 pub async fn read(
     fs: &RdFs,
     inode: u64,
-    _fh: u64,
+    fh: u64,
     offset: u64,
     size: u32,
     unrestrict_cache: &UnrestrictCache,
@@ -119,6 +123,50 @@ pub async fn read(
         }
     }
     let _guard = ReleaseGuard(&cache_item);
+
+    let buffer_size = clamp_buffer_size(parse_byte_size(&config.vfs.buffer_size));
+
+    // Per-fd read window vs direct `read_at(offset, size)`.
+    enum FetchPlan {
+        Direct,
+        Buffered {
+            buf: std::sync::Arc<tokio::sync::Mutex<VfsReadBuffer>>,
+            take: u32,
+        },
+    }
+
+    let (read_off, read_len, plan) = 'fetch: {
+        if fh != 0
+            && let Some(ent) = fs.open_files.get(&fh)
+        {
+            let buf = std::sync::Arc::clone(ent.value());
+            drop(ent);
+            let (fill_offset, fill_len, take) = {
+                let mut g = buf.lock().await;
+                match g.prepare_read(offset, size, file_size, buffer_size) {
+                    PrepareRead::Hit(data) => {
+                        tracing::trace!(
+                            inode,
+                            offset,
+                            bytes = data.len(),
+                            "fuse read: vfs buffer hit"
+                        );
+                        return Ok(ReplyData { data });
+                    }
+                    PrepareRead::Miss {
+                        fill_offset,
+                        fill_len,
+                        take,
+                    } => (fill_offset, fill_len, take),
+                }
+            };
+            if fill_len == 0 {
+                return Ok(ReplyData { data: Bytes::new() });
+            }
+            break 'fetch (fill_offset, fill_len, FetchPlan::Buffered { buf, take });
+        }
+        (offset, size, FetchPlan::Direct)
+    };
 
     // ── 3. Retry loop : unrestrict → corrupted-link check → cache read ────────
     for attempt in 0..=MAX_RETRIES {
@@ -224,8 +272,8 @@ pub async fn read(
         match cache_item
             .read_at(
                 fuse_ctx.clone(),
-                offset,
-                size,
+                read_off,
+                read_len,
                 &download,
                 &fs.rd,
                 unrestrict_cache,
@@ -234,7 +282,17 @@ pub async fn read(
             )
             .await
         {
-            Ok(data) => {
+            Ok(filled) => {
+                let data = match &plan {
+                    FetchPlan::Direct => filled,
+                    FetchPlan::Buffered { buf, take } => {
+                        let mut g = buf.lock().await;
+                        let reply_len = (*take as usize).min(filled.len());
+                        let reply = filled.slice(0..reply_len);
+                        g.after_fetch(read_off, filled, *take);
+                        reply
+                    }
+                };
                 tracing::trace!(inode, offset, bytes = data.len(), "fuse read: served");
                 return Ok(ReplyData { data });
             }

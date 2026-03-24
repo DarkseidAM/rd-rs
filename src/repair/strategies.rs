@@ -43,18 +43,85 @@ async fn info_ready(rd: &RealDebrid, id: &str, restrict_cached: bool) -> Result<
     Ok(info.progress == 100 && !info.links.is_empty())
 }
 
+/// Delete known `rd_ids`, add magnet, select files, wait for RD.  
+/// `None` = Strategy 1 incomplete (caller may try Strategy 2+).  
+/// `Some` = terminal outcome (success, unrepairable, defer, …).
+async fn try_strategy_1_reinsert(
+    rd: &Arc<RealDebrid>,
+    torrent: &ManagedTorrent,
+    files_to_select: &str,
+    restrict_cached: bool,
+) -> Option<CascadeOutcome> {
+    info!("Strategy 1: ReinsertTorrent for {}", torrent.access_key);
+
+    for rd_id in &torrent.rd_ids {
+        if let Err(e) = rd.delete_torrent(rd_id).await {
+            warn!("delete_torrent {} during repair: {}", rd_id, e);
+        }
+    }
+
+    let magnet_resp = match rd.add_magnet(&torrent.torrent.hash).await {
+        Ok(m) => m,
+        Err(e) => {
+            error!("add_magnet during repair: {e}");
+            return Some(map_rd(e));
+        }
+    };
+
+    if let Err(e) = rd
+        .select_torrent_files(&magnet_resp.id, files_to_select)
+        .await
+    {
+        error!("select_torrent_files during repair: {e}");
+        let _ = rd.delete_torrent(&magnet_resp.id).await;
+        return Some(map_rd(e));
+    }
+
+    match info_ready(rd, &magnet_resp.id, restrict_cached).await {
+        Ok(true) => {
+            info!("Strategy 1 succeeded for {}", torrent.access_key);
+            Some(CascadeOutcome::Success {
+                new_rd_ids: Some(vec![magnet_resp.id.clone()]),
+            })
+        }
+        Ok(false) if restrict_cached => {
+            Some(CascadeOutcome::Unrepairable(UnrepairableReason::NotCached))
+        }
+        Err(e) => {
+            let _ = rd.delete_torrent(&magnet_resp.id).await;
+            Some(map_rd(e))
+        }
+        _ => {
+            let _ = rd.delete_torrent(&magnet_resp.id).await;
+            None
+        }
+    }
+}
+
 /// Executes the core repair strategies in order.
 pub async fn execute_cascade(
     rd: &Arc<RealDebrid>,
     torrent: &ManagedTorrent,
     repair_cfg: &RepairConfig,
 ) -> CascadeOutcome {
+    let restrict_cached = repair_cfg.restrict_to_cached;
+
     let Some(info) = torrent.info.as_ref() else {
+        if torrent.torrent.hash.is_empty() {
+            warn!(
+                key = %torrent.access_key,
+                "repair cascade: no TorrentInfo and empty hash"
+            );
+            return CascadeOutcome::UnrepairableMsg(reasons::MISSING_TORRENT_DETAIL.to_string());
+        }
         warn!(
             key = %torrent.access_key,
-            "repair cascade: no TorrentInfo loaded — cannot reinsert/delete (refresh may have cleared info); load detail API first"
+            "repair cascade: no TorrentInfo (e.g. stale rd id) — reinsert by hash, select all files"
         );
-        return CascadeOutcome::Unrepairable(UnrepairableReason::InvalidFileIDs);
+        if let Some(out) = try_strategy_1_reinsert(rd, torrent, "all", restrict_cached).await {
+            return out;
+        }
+        return finish_failure(torrent);
     };
 
     if duplicate_selected_file_ids(info) {
@@ -72,24 +139,6 @@ pub async fn execute_cascade(
         return CascadeOutcome::Unrepairable(UnrepairableReason::NoRepairableFiles);
     }
 
-    let restrict_cached = repair_cfg.restrict_to_cached;
-
-    info!("Strategy 1: ReinsertTorrent for {}", torrent.access_key);
-
-    for rd_id in &torrent.rd_ids {
-        if let Err(e) = rd.delete_torrent(rd_id).await {
-            warn!("delete_torrent {} during repair: {}", rd_id, e);
-        }
-    }
-
-    let magnet_resp = match rd.add_magnet(&torrent.torrent.hash).await {
-        Ok(m) => m,
-        Err(e) => {
-            error!("add_magnet during repair: {e}");
-            return map_rd(e);
-        }
-    };
-
     let selected_ids = selected
         .iter()
         .map(|f| f.id.to_string())
@@ -101,30 +150,10 @@ pub async fn execute_cascade(
         selected_ids
     };
 
-    if let Err(e) = rd
-        .select_torrent_files(&magnet_resp.id, &files_to_select)
-        .await
+    if let Some(out) =
+        try_strategy_1_reinsert(rd, torrent, files_to_select.as_str(), restrict_cached).await
     {
-        error!("select_torrent_files during repair: {e}");
-        let _ = rd.delete_torrent(&magnet_resp.id).await;
-        return map_rd(e);
-    }
-
-    match info_ready(rd, &magnet_resp.id, restrict_cached).await {
-        Ok(true) => {
-            info!("Strategy 1 succeeded for {}", torrent.access_key);
-            return CascadeOutcome::Success;
-        }
-        Ok(false) if restrict_cached => {
-            return CascadeOutcome::Unrepairable(UnrepairableReason::NotCached);
-        }
-        Err(e) => {
-            let _ = rd.delete_torrent(&magnet_resp.id).await;
-            return map_rd(e);
-        }
-        _ => {
-            let _ = rd.delete_torrent(&magnet_resp.id).await;
-        }
+        return out;
     }
 
     warn!(
@@ -180,7 +209,7 @@ pub async fn execute_cascade(
 
     if all_fixed {
         info!("Strategy 2 succeeded for {}", torrent.access_key);
-        return CascadeOutcome::Success;
+        return CascadeOutcome::Success { new_rd_ids: None };
     }
 
     // Strategy 3: ArchiveAll (only when non-playable files are in the selection)
@@ -198,7 +227,9 @@ pub async fn execute_cascade(
                     match info_ready(rd, &m.id, restrict_cached).await {
                         Ok(true) => {
                             info!("Strategy 3 succeeded for {}", torrent.access_key);
-                            return CascadeOutcome::Success;
+                            return CascadeOutcome::Success {
+                                new_rd_ids: Some(vec![m.id.clone()]),
+                            };
                         }
                         Ok(false) if restrict_cached => {
                             let _ = rd.delete_torrent(&m.id).await;
@@ -276,7 +307,7 @@ pub async fn execute_cascade(
 
         if batches_ok == n_chunks {
             info!("Strategy 4 succeeded for {}", torrent.access_key);
-            return CascadeOutcome::Success;
+            return CascadeOutcome::Success { new_rd_ids: None };
         }
     } else {
         warn!(

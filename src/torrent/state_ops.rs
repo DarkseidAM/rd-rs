@@ -10,6 +10,28 @@ use crate::db::TorrentState;
 use super::{ManagedTorrent, TorrentManager};
 
 impl TorrentManager {
+    /// After reinsert/archive repair: replace `rd_ids`, clear stale detail & file_states, sync list `torrent.id`, persist.
+    pub async fn replace_rd_ids_after_repair(
+        &self,
+        access_key: &str,
+        rd_ids: Vec<String>,
+    ) -> anyhow::Result<()> {
+        let existing = self
+            .torrents
+            .get(access_key)
+            .map(|r| r.value().as_ref().clone());
+        let Some(mut m) = existing else {
+            return Ok(());
+        };
+        m.rd_ids = rd_ids;
+        m.info = None;
+        m.file_states = None;
+        if let Some(id) = m.rd_ids.first() {
+            m.torrent.id.clone_from(id);
+        }
+        self.persist_torrent_snapshot(&m).await
+    }
+
     /// Persist metadata (`file_states`, `info`, …) without changing [`TorrentState`].
     pub async fn persist_torrent_snapshot(&self, mt: &ManagedTorrent) -> anyhow::Result<()> {
         let updated = Arc::new(mt.clone());

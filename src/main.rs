@@ -52,6 +52,9 @@ struct RepairCli {
     /// Also add periodic-scan candidates (unassigned links, broken playable files, etc.).
     #[arg(long)]
     periodic_eligible: bool,
+    /// Enqueue every torrent (~full library repair). Default: only torrents that need repair.
+    #[arg(long)]
+    all: bool,
 }
 
 #[tokio::main]
@@ -67,9 +70,10 @@ async fn main() -> Result<()> {
 async fn run_repair_cli(args: RepairCli) -> Result<()> {
     let cfg = Config::load("config.toml")?;
     tracing::info!(
-        "repair CLI: enqueue all + one pass (clear_unrepairable={}, periodic_eligible={})",
+        "repair CLI: one pass (clear_unrepairable={}, periodic_eligible={}, enqueue_all={})",
         args.clear_unrepairable,
-        args.periodic_eligible
+        args.periodic_eligible,
+        args.all
     );
 
     let db_path = cfg.cache_dir.join("rd-rs.db");
@@ -88,6 +92,7 @@ async fn run_repair_cli(args: RepairCli) -> Result<()> {
     torrent_mgr
         .enqueue_repair_all(EnqueueRepairAllOptions {
             clear_unrepairable: args.clear_unrepairable,
+            all: args.all,
         })
         .await;
 

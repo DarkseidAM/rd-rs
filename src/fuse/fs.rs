@@ -4,7 +4,7 @@
 //!   - `lookup` + `getattr` → size from TorrentInfo.files; root, `__all__`, torrent dirs, files
 //!   - `readdir` / `readdirplus` → root, `__all__` (by display name, dedup), torrent dirs (lazy TorrentInfo)
 //!   - `opendir`, `access`, `listxattr`, `getxattr` → implemented so kernel does not EIO
-//!   - `open` → stateless (fh 0, O_DIRECT)
+//!   - `open` → unique `fh` per regular file open; `release` drops per-fd read buffer state
 //!   - `read` → **Phase 3: HTTP range + disk cache (implemented)**
 //!
 //! ## Checking FUSE methods (service running)
@@ -19,7 +19,7 @@
 //! - **lookup(file)** — `stat /mnt/test/__all__/<access_key>/<filename>`
 //! - **getattr(file)** — same as above, or after open
 //! - **open** — `touch /mnt/test/__all__/x/y 2>/dev/null` (will fail: read-only) or open for read
-//! - **read** — `cat /mnt/test/__all__/.../file` (Phase 3; currently ENOSYS)
+//! - **read** — `cat /mnt/test/__all__/.../file` (cache + optional per-fd buffer)
 
 use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
@@ -34,6 +34,7 @@ use fuse3::{Errno, Result as FuseResult};
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::fuse::consts::{INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE};
+use crate::fuse::vfs_read_buffer::VfsReadBuffer;
 use crate::rd::RealDebrid;
 use crate::rd::api::{UnrestrictCache, new_unrestrict_cache};
 use crate::torrent::{ManagedTorrent, TorrentManager};
@@ -56,6 +57,10 @@ pub struct RdFs {
     pub(crate) cached_all_dir: CachedAllDir,
     /// Throttle `warn!` when reads skip a file marked `broken` in `file_states` (otherwise silent at `info`).
     pub(crate) broken_read_warn_ts: DashMap<String, Instant>,
+    /// Next FUSE file handle for regular files (`>= 1`; `0` = no per-fd buffer).
+    pub(crate) next_fh: AtomicU64,
+    /// Per-`fh` read-ahead buffer for file opens (see `vfs_read_buffer`).
+    pub(crate) open_files: DashMap<u64, Arc<tokio::sync::Mutex<VfsReadBuffer>>>,
 }
 
 impl RdFs {
@@ -81,6 +86,8 @@ impl RdFs {
                 Arc::new(Vec::new()),
             )),
             broken_read_warn_ts: DashMap::new(),
+            next_fh: AtomicU64::new(1),
+            open_files: DashMap::new(),
         }
     }
 }
@@ -180,11 +187,44 @@ impl Filesystem for RdFs {
         }
     }
 
-    async fn open(&self, _req: Request, _inode: u64, flags: u32) -> FuseResult<ReplyOpen> {
+    async fn open(&self, _req: Request, inode: u64, flags: u32) -> FuseResult<ReplyOpen> {
         if (flags & (libc::O_WRONLY as u32 | libc::O_RDWR as u32)) != 0 {
             return Err(Errno::from(libc::EACCES));
         }
+        if inode >= INODE_FILE_BASE {
+            let fh = self
+                .next_fh
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.open_files.insert(
+                fh,
+                Arc::new(tokio::sync::Mutex::new(VfsReadBuffer::default())),
+            );
+            return Ok(ReplyOpen { fh, flags: 0 });
+        }
         Ok(ReplyOpen { fh: 0, flags: 0 })
+    }
+
+    async fn release(
+        &self,
+        _req: Request,
+        _inode: u64,
+        fh: u64,
+        _flags: u32,
+        _lock_owner: u64,
+        _flush: bool,
+    ) -> FuseResult<()> {
+        self.open_files.remove(&fh);
+        Ok(())
+    }
+
+    async fn flush(
+        &self,
+        _req: Request,
+        _inode: u64,
+        _fh: u64,
+        _lock_owner: u64,
+    ) -> FuseResult<()> {
+        Ok(())
     }
 
     async fn read(

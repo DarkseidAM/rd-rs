@@ -50,9 +50,6 @@ pub(super) fn default_read_ahead() -> String {
 pub(super) fn default_chunk_size() -> String {
     "4M".into()
 }
-pub(super) fn default_read_wait() -> String {
-    "5ms".into()
-}
 pub(super) fn default_parallel_streams() -> u32 {
     8
 }
