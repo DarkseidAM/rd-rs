@@ -135,8 +135,10 @@ pub async fn read(
         },
     }
 
-    let (read_off, read_len, plan) = if fh != 0 {
-        if let Some(ent) = fs.open_files.get(&fh) {
+    let (read_off, read_len, plan) = 'fetch: {
+        if fh != 0
+            && let Some(ent) = fs.open_files.get(&fh)
+        {
             let buf = std::sync::Arc::clone(ent.value());
             drop(ent);
             let (fill_offset, fill_len, take) = {
@@ -161,11 +163,8 @@ pub async fn read(
             if fill_len == 0 {
                 return Ok(ReplyData { data: Bytes::new() });
             }
-            (fill_offset, fill_len, FetchPlan::Buffered { buf, take })
-        } else {
-            (offset, size, FetchPlan::Direct)
+            break 'fetch (fill_offset, fill_len, FetchPlan::Buffered { buf, take });
         }
-    } else {
         (offset, size, FetchPlan::Direct)
     };
 

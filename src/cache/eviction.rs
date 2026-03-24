@@ -13,6 +13,8 @@ const ITEM_IDLE_TIMEOUT_SECS: u64 = 60;
 const EVICT_THRESHOLD: f64 = 0.90;
 /// Max rows considered per TTL cleanup pass (`stale_keys` query limit).
 const TTL_STALE_KEYS_QUERY_LIMIT: usize = 10_000;
+/// Skip on-disk cache files not in the item map until this many seconds after atime (avoid racing with active writes).
+const DISK_ORPHAN_MIN_AGE_SECS: u64 = 5 * 60;
 
 pub(super) fn evict(cache: &Cache) {
     let now_secs = std::time::SystemTime::now()
@@ -100,7 +102,7 @@ pub(super) fn evict_disk_lru(cache: &Cache, threshold: u64, now_secs: u64) {
         if cache.items.contains_key(&key) {
             continue;
         }
-        if now_secs.saturating_sub(atime) < 300 {
+        if now_secs.saturating_sub(atime) < DISK_ORPHAN_MIN_AGE_SECS {
             continue;
         }
         if std::fs::remove_file(&path).is_ok() {

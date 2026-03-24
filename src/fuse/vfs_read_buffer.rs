@@ -47,15 +47,15 @@ impl VfsReadBuffer {
         end.saturating_sub(offset).min(u32::MAX as u64) as u32
     }
 
+    /// Read-ahead: `max(buffer_size, need)` bytes, capped at EOF and `u32::MAX`.
     fn compute_fill_len(offset: u64, need: u32, file_size: u64, buffer_size: u64) -> u32 {
         let remaining = file_size.saturating_sub(offset);
         if remaining == 0 {
             return 0;
         }
-        let max_chunk = buffer_size.min(remaining).max(1);
-        let want = max_chunk.max(need as u64);
-        let capped = want.min(remaining);
-        capped.min(u32::MAX as u64) as u32
+        remaining
+            .min(buffer_size.max(need as u64))
+            .min(u32::MAX as u64) as u32
     }
 
     /// Decide whether this read is satisfied from the buffer or needs a `read_at` fetch.
@@ -75,24 +75,17 @@ impl VfsReadBuffer {
             self.clear();
         }
 
-        if self.data.is_empty() {
-            let fill_len = Self::compute_fill_len(offset, need, file_size, buffer_size);
-            return PrepareRead::Miss {
-                fill_offset: offset,
-                fill_len,
-                take: need,
-            };
+        if !self.data.is_empty() {
+            let avail = self.data.len();
+            if avail >= need as usize {
+                let out = self.data.slice(0..need as usize);
+                self.buf_start += need as u64;
+                self.data = self.data.slice(need as usize..avail);
+                return PrepareRead::Hit(out);
+            }
+            self.clear();
         }
 
-        let avail = self.data.len();
-        if avail >= need as usize {
-            let out = self.data.slice(0..need as usize);
-            self.buf_start += need as u64;
-            self.data = self.data.slice(need as usize..avail);
-            return PrepareRead::Hit(out);
-        }
-
-        self.clear();
         let fill_len = Self::compute_fill_len(offset, need, file_size, buffer_size);
         PrepareRead::Miss {
             fill_offset: offset,
