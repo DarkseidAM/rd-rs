@@ -6,8 +6,9 @@ pub mod reasons;
 pub mod strategies;
 
 pub use detect::{
-    duplicate_selected_file_ids, has_non_playable_selected, is_stalled_download,
-    path_looks_playable, unassigned_selected_link_count,
+    check_head_unreachable, duplicate_selected_file_ids, has_non_playable_selected,
+    is_stalled_download, passive_head_probe_slot_count, path_looks_playable,
+    unassigned_selected_link_count,
 };
 
 use serde::{Deserialize, Serialize};

@@ -3,8 +3,16 @@
 use std::collections::HashSet;
 
 use crate::db::TorrentState;
-use crate::rd::types::{Torrent, TorrentInfo};
+use crate::rd::RealDebrid;
+use crate::rd::api::UnrestrictCache;
+use crate::rd::client::{ApiError, RdError};
+use crate::rd::types::{File, Torrent, TorrentInfo};
 use crate::torrent::ManagedTorrent;
+
+fn verify_failed_like_bandwidth(e: &anyhow::Error) -> bool {
+    let m = e.to_string().to_lowercase();
+    m.contains("traffic") || m.contains("bandwidth") || m.contains("fair usage")
+}
 
 /// Selected-file index `i` should have `links[i]` non-empty (matches FUSE link resolution).
 /// Same rule as the repair engine periodic scan: eligible for repair work (not skipped as unrepairable).
@@ -23,6 +31,60 @@ pub fn periodic_repair_eligible(mt: &ManagedTorrent) -> bool {
     mt.state == TorrentState::Broken
         || mt.state == TorrentState::UnderRepair
         || (mt.state == TorrentState::Ok && (unassigned || file_broken))
+}
+
+/// How many selected **playable** files have a non-empty RD link slot (same index rule as FUSE).
+/// Used to decide whether passive HEAD probing can run and for tests.
+pub fn passive_head_probe_slot_count(info: &TorrentInfo) -> usize {
+    let selected: Vec<&File> = info.files.iter().filter(|f| f.is_selected()).collect();
+    let mut n = 0usize;
+    for (sel_i, file) in selected.iter().enumerate() {
+        if !path_looks_playable(&file.path) {
+            continue;
+        }
+        if info.links.get(sel_i).is_some_and(|s| !s.is_empty()) {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Passive link health: unrestrict each playable selected RD link, then `verify_link` on the CDN URL.
+/// Returns how many slots failed (treats unrestrict/verify failures like preflight, except bandwidth → `Err`).
+pub async fn check_head_unreachable(
+    rd: &RealDebrid,
+    cache: &UnrestrictCache,
+    info: &TorrentInfo,
+) -> Result<usize, RdError> {
+    let mut unreachable = 0usize;
+    let selected: Vec<&File> = info.files.iter().filter(|f| f.is_selected()).collect();
+    for (sel_i, file) in selected.iter().enumerate() {
+        if !path_looks_playable(&file.path) {
+            continue;
+        }
+        let Some(link) = info.links.get(sel_i).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        match rd.unrestrict_link(cache, link).await {
+            Ok(dl) => {
+                if let Err(e) = rd.verify_link(&dl.download).await {
+                    if verify_failed_like_bandwidth(&e) {
+                        return Err(RdError::Api(ApiError::TrafficExhausted {
+                            message: e.to_string(),
+                        }));
+                    }
+                    unreachable += 1;
+                }
+            }
+            Err(e) => {
+                if e.is_bandwidth_limited() {
+                    return Err(e);
+                }
+                unreachable += 1;
+            }
+        }
+    }
+    Ok(unreachable)
 }
 
 pub fn unassigned_selected_link_count(info: &TorrentInfo) -> usize {

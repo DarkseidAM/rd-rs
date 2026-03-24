@@ -14,6 +14,12 @@ pub(super) fn default_repair_timeout_mins() -> u64 {
 pub(super) fn default_stalled_download_mins() -> u64 {
     10
 }
+pub(super) fn default_head_unreachable_threshold() -> usize {
+    1
+}
+pub(super) fn default_head_check_min_interval_mins() -> u64 {
+    30
+}
 pub(super) fn default_rate_limit() -> u32 {
     250
 }

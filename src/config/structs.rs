@@ -62,6 +62,18 @@ pub struct RepairConfig {
 
     #[serde(default)]
     pub delete_error_torrents: bool,
+
+    /// Periodically probe unrestricted CDN URLs (HEAD or range per `[api]`) for playable files.
+    #[serde(default = "defaults::bool_true")]
+    pub head_check_enabled: bool,
+
+    /// Enqueue repair when passive HEAD finds at least this many bad slots (≥ 1).
+    #[serde(default = "defaults::default_head_unreachable_threshold")]
+    pub head_unreachable_threshold: usize,
+
+    /// Minimum wall time between passive HEAD runs for the same torrent.
+    #[serde(default = "defaults::default_head_check_min_interval_mins")]
+    pub head_check_min_interval_mins: u64,
 }
 
 impl Default for RepairConfig {
@@ -73,6 +85,9 @@ impl Default for RepairConfig {
             stalled_download_mins: 10,
             restrict_to_cached: false,
             delete_error_torrents: false,
+            head_check_enabled: true,
+            head_unreachable_threshold: 1,
+            head_check_min_interval_mins: 30,
         }
     }
 }
