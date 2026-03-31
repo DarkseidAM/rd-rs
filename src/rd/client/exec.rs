@@ -49,15 +49,14 @@ impl RdClient {
                 rl.wait().await;
             }
 
-            // Use the active pool token for download client; otherwise use the static token.
             let active_token = self
                 .config
                 .download_token_pool
                 .as_ref()
-                .map(|p| p.current().to_string())
-                .unwrap_or_else(|| self.config.token.clone());
+                .map(|p| p.current())
+                .unwrap_or(self.config.token.as_str());
 
-            let req = build().bearer_auth(&active_token);
+            let req = build().bearer_auth(active_token);
 
             let resp = match req.send().await {
                 Ok(r) => r,
