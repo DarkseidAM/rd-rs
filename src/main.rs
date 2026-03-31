@@ -83,6 +83,9 @@ async fn run_repair_cli(args: RepairCli) -> Result<()> {
     let config = Arc::new(ArcSwap::from_pointee(cfg.clone()));
     let rd_client = rd_rs::rd::RealDebrid::new(&cfg)?;
     rd_rs::rd::cdn::run_network_test(&rd_client, &cfg).await;
+    if let Some(pin) = rd_rs::rd::cdn::RankedHosts::try_load() {
+        rd_client.ranked_hosts.store(Some(pin));
+    }
     let rd_client = Arc::new(rd_client);
     let db = Arc::new(db.conn);
 
@@ -140,6 +143,9 @@ async fn run_fuse_mount() -> Result<()> {
     let rd_client = rd_rs::rd::RealDebrid::new(&cfg)?;
     tracing::info!("RealDebrid clients ready");
     rd_rs::rd::cdn::run_network_test(&rd_client, &cfg).await;
+    if let Some(pin) = rd_rs::rd::cdn::RankedHosts::try_load() {
+        rd_client.ranked_hosts.store(Some(pin));
+    }
 
     let rd_client = Arc::new(rd_client);
     let db = Arc::new(db.conn);

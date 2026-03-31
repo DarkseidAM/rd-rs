@@ -34,7 +34,19 @@ impl RealDebrid {
         loop {
             let resp = self
                 .download_client
-                .execute(|| self.download_client.client.get(url).header("Range", range))
+                .execute(|use_fallback| {
+                    let mut active_url = url.to_string();
+                    if !use_fallback
+                        && let Some(pin) = &*self.ranked_hosts.load()
+                        && let Some(rewritten) = pin.rewrite_url(url)
+                    {
+                        active_url = rewritten;
+                    }
+                    self.download_client
+                        .client
+                        .get(active_url)
+                        .header("Range", range)
+                })
                 .await?;
 
             if resp.headers().get(reqwest::header::CONTENT_RANGE).is_some() {

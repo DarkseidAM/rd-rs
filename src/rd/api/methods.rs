@@ -12,7 +12,7 @@ impl RealDebrid {
     pub async fn get_user(&self) -> Result<User> {
         let resp = self
             .api_client
-            .execute(|| {
+            .execute(|_| {
                 self.api_client
                     .client
                     .get("https://api.real-debrid.com/rest/1.0/user")
@@ -36,7 +36,7 @@ impl RealDebrid {
 
         let resp = self
             .api_client
-            .execute(|| self.api_client.client.get(&url))
+            .execute(|_| self.api_client.client.get(&url))
             .await
             .context("list_torrents")?;
 
@@ -113,7 +113,7 @@ impl RealDebrid {
         let url = format!("https://api.real-debrid.com/rest/1.0/torrents/info/{id}");
         let resp = self
             .api_client
-            .execute(|| self.api_client.client.get(&url))
+            .execute(|_| self.api_client.client.get(&url))
             .await?;
         let info: TorrentInfo = resp.json().await.map_err(RdError::Network)?;
         Ok(info)

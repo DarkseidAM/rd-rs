@@ -37,6 +37,7 @@ pub struct RealDebrid {
     /// Round-robin token pool for the download client; rotated on bandwidth limit responses.
     pub token_pool: Arc<TokenPool>,
     pub config: Arc<Config>,
+    pub ranked_hosts: Arc<arc_swap::ArcSwapOption<cdn::RankedHosts>>,
 }
 
 impl RealDebrid {
@@ -130,6 +131,7 @@ impl RealDebrid {
             connection_semaphore,
             token_pool,
             config: Arc::new(cfg.clone()),
+            ranked_hosts: Arc::new(arc_swap::ArcSwapOption::new(None)),
         })
     }
 }
