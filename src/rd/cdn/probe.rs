@@ -107,10 +107,7 @@ pub(super) async fn dns_probe_fallback() -> NetworkTestResults {
 
     let latency_map = ipv4_latency.lock().await.clone();
 
-    if let Some((host, latency)) = latency_map
-        .iter()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-    {
+    if let Some((host, latency)) = latency_map.iter().min_by(|a, b| a.1.total_cmp(b.1)) {
         tracing::info!("CDN: fastest host = {} ({:.3}s)", host, latency);
     }
 
@@ -177,10 +174,7 @@ pub(super) async fn run_latency_test_on_entries(entries: Vec<ServerEntry>) -> Ne
         }
     }
 
-    if let Some((host, latency)) = ipv4_latency
-        .iter()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-    {
+    if let Some((host, latency)) = ipv4_latency.iter().min_by(|a, b| a.1.total_cmp(b.1)) {
         tracing::info!("CDN: fastest IPv4 host = {} ({:.3}s)", host, latency);
     }
 

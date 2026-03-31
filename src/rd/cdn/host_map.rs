@@ -17,7 +17,7 @@ impl RankedHosts {
         let (fastest, latency) = results
             .ipv4_latency
             .into_iter()
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
 
         tracing::info!("RankedHosts: pinning to {} ({:.3}s)", fastest, latency);
 
