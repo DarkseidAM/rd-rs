@@ -13,11 +13,12 @@ impl RankedHosts {
     pub fn try_load() -> Option<Arc<Self>> {
         let results = super::run::load_cached_results()?;
 
-        // Convert to Vec and sort by latency (lowest first)
-        let mut sorted: Vec<_> = results.ipv4_latency.into_iter().collect();
-        sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Find the host with the minimum latency in a single pass O(N).
+        let (fastest, latency) = results
+            .ipv4_latency
+            .into_iter()
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
 
-        let (fastest, latency) = sorted.first()?;
         tracing::info!("RankedHosts: pinning to {} ({:.3}s)", fastest, latency);
 
         Some(Arc::new(Self {

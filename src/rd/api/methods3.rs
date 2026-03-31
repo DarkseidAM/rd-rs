@@ -24,6 +24,16 @@ impl RealDebrid {
     /// [`RdError::RangeNotSupported`] immediately (unrestrict cannot fix that).
     ///
     /// Caller must hold `connection_semaphore` (see cache worker); this method does not acquire it.
+    /// Applies CDN host pinning logic if a pinned host is available and fallback is not requested.
+    /// Returns `Some(String)` if the URL was rewritten, otherwise `None` (use the original URL).
+    pub(crate) fn rewrite_download_url(&self, url: &str, use_fallback: bool) -> Option<String> {
+        if !use_fallback && let Some(pin) = &*self.ranked_hosts.load() {
+            pin.rewrite_url(url)
+        } else {
+            None
+        }
+    }
+
     pub async fn http_range_get(
         &self,
         url: &str,
@@ -35,16 +45,10 @@ impl RealDebrid {
             let resp = self
                 .download_client
                 .execute(|use_fallback| {
-                    let mut active_url = url.to_string();
-                    if !use_fallback
-                        && let Some(pin) = &*self.ranked_hosts.load()
-                        && let Some(rewritten) = pin.rewrite_url(url)
-                    {
-                        active_url = rewritten;
-                    }
+                    let active_url = self.rewrite_download_url(url, use_fallback);
                     self.download_client
                         .client
-                        .get(active_url)
+                        .get(active_url.as_deref().unwrap_or(url))
                         .header("Range", range)
                 })
                 .await?;

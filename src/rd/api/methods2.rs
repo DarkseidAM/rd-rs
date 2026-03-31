@@ -147,14 +147,10 @@ impl RealDebrid {
         let resp = self
             .download_client
             .execute(|use_fallback| {
-                let mut active_url = url.to_string();
-                if !use_fallback
-                    && let Some(pin) = &*self.ranked_hosts.load()
-                    && let Some(rewritten) = pin.rewrite_url(url)
-                {
-                    active_url = rewritten;
-                }
-                self.download_client.client.head(active_url)
+                let active_url = self.rewrite_download_url(url, use_fallback);
+                self.download_client
+                    .client
+                    .head(active_url.as_deref().unwrap_or(url))
             })
             .await
             .context("verify_head")?;
@@ -175,16 +171,10 @@ impl RealDebrid {
         let resp = self
             .download_client
             .execute(|use_fallback| {
-                let mut active_url = url.to_string();
-                if !use_fallback
-                    && let Some(pin) = &*self.ranked_hosts.load()
-                    && let Some(rewritten) = pin.rewrite_url(url)
-                {
-                    active_url = rewritten;
-                }
+                let active_url = self.rewrite_download_url(url, use_fallback);
                 self.download_client
                     .client
-                    .get(active_url)
+                    .get(active_url.as_deref().unwrap_or(url))
                     .header("Range", "bytes=0-0")
             })
             .await
