@@ -120,10 +120,26 @@ pub(super) async fn dns_probe_fallback() -> NetworkTestResults {
 }
 
 pub(super) async fn run_latency_test_on_entries(entries: Vec<ServerEntry>) -> NetworkTestResults {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .expect("build client");
+    let mut builder = Client::builder().timeout(Duration::from_secs(5));
+
+    // Pre-seed reqwest's DNS resolver map to absolutely bypass DNS lookups during the latency sweep.
+    // This removes DNS fetching variability and strictly tests TCP/TLS rtt.
+    for entry in &entries {
+        if let Some(ipv4) = &entry.ipv4 {
+            if let Ok(ip) = ipv4.parse::<std::net::IpAddr>() {
+                builder = builder.resolve(&entry.hostname, std::net::SocketAddr::new(ip, 443));
+            }
+        }
+        if let Some(ipv6) = &entry.ipv6 {
+            // ipv6 addresses might contain brackets or port specs in some cases, handle standard parsing
+            let ip_str = ipv6.trim_matches(|c| c == '[' || c == ']');
+            if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+                builder = builder.resolve(&entry.hostname, std::net::SocketAddr::new(ip, 443));
+            }
+        }
+    }
+
+    let client = builder.build().expect("build client");
 
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let mut handles = Vec::with_capacity(entries.len());
