@@ -14,6 +14,7 @@ impl RankedHosts {
         let results = super::run::load_cached_results()?;
 
         // Find the host with the minimum latency in a single pass O(N).
+        // TODO: check for ipv6_latency also
         let (fastest, latency) = results
             .ipv4_latency
             .into_iter()

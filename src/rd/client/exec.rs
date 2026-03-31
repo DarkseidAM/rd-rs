@@ -64,7 +64,7 @@ impl RdClient {
                     if !use_fallback && attempt == 0 && self.config.is_download_client {
                         use_fallback = true;
                         tracing::warn!(
-                            "Network error parsing pinned host, falling back to original URL: {e}"
+                            "Network error using pinned host, falling back to original URL: {e}"
                         );
                         continue;
                     }
