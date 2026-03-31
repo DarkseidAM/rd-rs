@@ -169,10 +169,6 @@ pub struct VfsConfig {
     /// Default: 600.
     #[serde(default = "defaults::default_entry_timeout_secs")]
     pub entry_timeout_secs: u64,
-
-    /// Kernel negative-dentry cache timeout in seconds. Default: 5.
-    #[serde(default = "defaults::default_negative_timeout_secs")]
-    pub negative_timeout_secs: u64,
 }
 
 impl Default for VfsConfig {
@@ -187,7 +183,6 @@ impl Default for VfsConfig {
             max_parallel_streams: 8,
             attr_timeout_secs: 60,
             entry_timeout_secs: 600,
-            negative_timeout_secs: 5,
         }
     }
 }

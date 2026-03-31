@@ -65,9 +65,6 @@ pub(super) fn default_attr_timeout_secs() -> u64 {
 pub(super) fn default_entry_timeout_secs() -> u64 {
     600
 }
-pub(super) fn default_negative_timeout_secs() -> u64 {
-    5
-}
 pub(super) fn default_mount_path() -> PathBuf {
     PathBuf::from("/mnt/zurg")
 }
