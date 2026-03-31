@@ -107,9 +107,7 @@ pub(super) async fn dns_probe_fallback() -> NetworkTestResults {
 
     let latency_map = ipv4_latency.lock().await.clone();
 
-    let mut sorted: Vec<_> = latency_map.iter().collect();
-    sorted.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal));
-    if let Some((host, latency)) = sorted.first() {
+    if let Some((host, latency)) = latency_map.iter().min_by(|a, b| a.1.total_cmp(b.1)) {
         tracing::info!("CDN: fastest host = {} ({:.3}s)", host, latency);
     }
 
@@ -120,10 +118,27 @@ pub(super) async fn dns_probe_fallback() -> NetworkTestResults {
 }
 
 pub(super) async fn run_latency_test_on_entries(entries: Vec<ServerEntry>) -> NetworkTestResults {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .expect("build client");
+    let mut builder = Client::builder().timeout(Duration::from_secs(5));
+
+    // Pre-seed reqwest's DNS resolver map to absolutely bypass DNS lookups during the latency sweep.
+    // This removes DNS fetching variability and strictly tests TCP/TLS rtt.
+    for entry in &entries {
+        if let Some(ipv4) = &entry.ipv4
+            && let Ok(ip) = ipv4.parse::<std::net::IpAddr>()
+        {
+            builder = builder.resolve(&entry.hostname, std::net::SocketAddr::new(ip, 443));
+        }
+        // ipv6 addresses might contain brackets or port specs in some cases, handle standard parsing
+        if let Some(ipv6) = &entry.ipv6
+            && let Ok(ip) = ipv6
+                .trim_matches(|c| c == '[' || c == ']')
+                .parse::<std::net::IpAddr>()
+        {
+            builder = builder.resolve(&entry.hostname, std::net::SocketAddr::new(ip, 443));
+        }
+    }
+
+    let client = builder.build().expect("build client");
 
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let mut handles = Vec::with_capacity(entries.len());
@@ -159,9 +174,7 @@ pub(super) async fn run_latency_test_on_entries(entries: Vec<ServerEntry>) -> Ne
         }
     }
 
-    let mut sorted: Vec<_> = ipv4_latency.iter().collect();
-    sorted.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal));
-    if let Some((host, latency)) = sorted.first() {
+    if let Some((host, latency)) = ipv4_latency.iter().min_by(|a, b| a.1.total_cmp(b.1)) {
         tracing::info!("CDN: fastest IPv4 host = {} ({:.3}s)", host, latency);
     }
 

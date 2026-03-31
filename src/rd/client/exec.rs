@@ -32,10 +32,9 @@ impl RdClient {
 
     pub async fn execute(
         &self,
-        build: impl Fn() -> reqwest::RequestBuilder,
+        build: impl Fn(bool) -> reqwest::RequestBuilder,
     ) -> Result<Response, RdError> {
         let mut attempt: u32 = 0;
-        // For download client: track how many token rotations have been attempted.
         let max_rotations = self
             .config
             .download_token_pool
@@ -43,6 +42,7 @@ impl RdClient {
             .map(|p| p.len().saturating_sub(1))
             .unwrap_or(0);
         let mut rotations: usize = 0;
+        let mut use_fallback = false;
 
         loop {
             if let Some(rl) = &self.config.rate_limiter {
@@ -56,11 +56,18 @@ impl RdClient {
                 .map(|p| p.current())
                 .unwrap_or(self.config.token.as_str());
 
-            let req = build().bearer_auth(active_token);
+            let req = build(use_fallback).bearer_auth(active_token);
 
             let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) if e.is_timeout() || e.is_connect() || is_network_error(&e) => {
+                    if !use_fallback && attempt == 0 && self.config.is_download_client {
+                        use_fallback = true;
+                        tracing::warn!(
+                            "Network error using pinned host, falling back to original URL: {e}"
+                        );
+                        continue;
+                    }
                     if attempt >= self.config.max_retries {
                         tracing::error!(attempt, "Network error exceeded max retries: {e}");
                         return Err(RdError::MaxRetriesExceeded);

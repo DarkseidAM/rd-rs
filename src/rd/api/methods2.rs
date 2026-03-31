@@ -25,7 +25,7 @@ impl RealDebrid {
         let form_body = format!("link={}", urlencoding_encode(link));
         let resp = self
             .unrestrict_client
-            .execute(|| {
+            .execute(|_| {
                 self.unrestrict_client
                     .client
                     .post("https://api.real-debrid.com/rest/1.0/unrestrict/link")
@@ -52,7 +52,7 @@ impl RealDebrid {
         let url = format!("https://api.real-debrid.com/rest/1.0/torrents/selectFiles/{id}");
         let body = format!("files={files}");
         self.api_client
-            .execute(|| {
+            .execute(|_| {
                 self.api_client
                     .client
                     .post(&url)
@@ -66,7 +66,7 @@ impl RealDebrid {
     pub async fn delete_torrent(&self, id: &str) -> Result<(), RdError> {
         let url = format!("https://api.real-debrid.com/rest/1.0/torrents/delete/{id}");
         self.api_client
-            .execute(|| self.api_client.client.delete(&url))
+            .execute(|_| self.api_client.client.delete(&url))
             .await?;
         Ok(())
     }
@@ -75,7 +75,7 @@ impl RealDebrid {
         let body = format!("magnet=magnet%3A%3Fxt%3Durn%3Abtih%3A{hash}");
         let resp = self
             .api_client
-            .execute(|| {
+            .execute(|_| {
                 self.api_client
                     .client
                     .post("https://api.real-debrid.com/rest/1.0/torrents/addMagnet")
@@ -90,7 +90,7 @@ impl RealDebrid {
     pub async fn get_active_count(&self) -> Result<ActiveTorrentCountResponse> {
         let resp = self
             .api_client
-            .execute(|| {
+            .execute(|_| {
                 self.api_client
                     .client
                     .get("https://api.real-debrid.com/rest/1.0/torrents/activeCount")
@@ -105,7 +105,7 @@ impl RealDebrid {
     pub async fn get_traffic_details(&self) -> Result<TrafficDetailsResponse> {
         let resp = self
             .api_client
-            .execute(|| {
+            .execute(|_| {
                 self.api_client
                     .client
                     .get("https://api.real-debrid.com/rest/1.0/traffic/details")
@@ -123,7 +123,7 @@ impl RealDebrid {
         );
         let resp = self
             .api_client
-            .execute(|| self.api_client.client.get(&url))
+            .execute(|_| self.api_client.client.get(&url))
             .await
             .context("get_downloads")?;
         let items: Vec<DownloadItem> = resp.json().await.context("get_downloads: decode")?;
@@ -146,7 +146,12 @@ impl RealDebrid {
             .context("verify_head: connection semaphore closed")?;
         let resp = self
             .download_client
-            .execute(|| self.download_client.client.head(url))
+            .execute(|use_fallback| {
+                let active_url = self.rewrite_download_url(url, use_fallback);
+                self.download_client
+                    .client
+                    .head(active_url.as_deref().unwrap_or(url))
+            })
             .await
             .context("verify_head")?;
         anyhow::ensure!(
@@ -165,10 +170,11 @@ impl RealDebrid {
             .context("verify_range: connection semaphore closed")?;
         let resp = self
             .download_client
-            .execute(|| {
+            .execute(|use_fallback| {
+                let active_url = self.rewrite_download_url(url, use_fallback);
                 self.download_client
                     .client
-                    .get(url)
+                    .get(active_url.as_deref().unwrap_or(url))
                     .header("Range", "bytes=0-0")
             })
             .await
