@@ -41,7 +41,7 @@ pub(crate) async fn read_at(
     let max_parallel_streams = config.vfs.max_parallel_streams;
     let fetch_until = (end + read_ahead).min(item.file_size);
 
-    let (mut spawned_task, mut session) = {
+    let (spawned_task, session) = {
         let mut workers = item.active_workers.lock().unwrap();
         let existing = workers
             .iter()
@@ -83,22 +83,10 @@ pub(crate) async fn read_at(
                 }
 
                 if spawned_task.is_none() {
-                    match tokio::time::timeout(std::time::Duration::from_millis(500), notified).await {
-                        Ok(_) => {} // Notified in time, loop around
-                        Err(_) => {
-                            // 500ms Adaptive Kicker: Existing worker is stalling or too far behind.
-                            tracing::warn!("fuse read blocked > 500ms at {offset}; kicking priority downloader");
-
-                            let (handle, new_session) = spawn_worker(
-                                item, offset, end, fetch_until, base_chunk, read_ahead, max_parallel_streams,
-                                download, rd, unrestrict_cache, pause_rx.clone()
-                            );
-
-                            item.active_workers.lock().unwrap().push(Arc::clone(&new_session));
-                            spawned_task = Some(handle);
-                            session = new_session;
-                            _waiter = WaiterGuard::new(Arc::clone(&session)); // switch guard
-                        }
+                    // We joined an existing worker session. Just wait for it to download the data.
+                    match tokio::time::timeout(std::time::Duration::from_millis(5000), notified).await {
+                        Ok(_) => {} // Progress was made
+                        Err(_) => tracing::trace!("fuse read waiting > 5s at {offset} (worker is likely downloading a large chunk)"),
                     }
                 } else {
                     notified.await;

@@ -159,6 +159,20 @@ pub struct VfsConfig {
 
     #[serde(default = "defaults::default_parallel_streams")]
     pub max_parallel_streams: u32,
+
+    /// Kernel attribute cache timeout in seconds (equiv. rclone `--attr-timeout`).
+    /// Higher values reduce `getattr` round-trips. Default: 60.
+    #[serde(default = "defaults::default_attr_timeout_secs")]
+    pub attr_timeout_secs: u64,
+
+    /// Kernel directory-entry cache timeout in seconds (equiv. rclone `--dir-cache-time`).
+    /// Default: 600.
+    #[serde(default = "defaults::default_entry_timeout_secs")]
+    pub entry_timeout_secs: u64,
+
+    /// Kernel negative-dentry cache timeout in seconds. Default: 5.
+    #[serde(default = "defaults::default_negative_timeout_secs")]
+    pub negative_timeout_secs: u64,
 }
 
 impl Default for VfsConfig {
@@ -171,6 +185,9 @@ impl Default for VfsConfig {
             read_ahead: "128M".into(),
             chunk_size: "4M".into(),
             max_parallel_streams: 8,
+            attr_timeout_secs: 60,
+            entry_timeout_secs: 600,
+            negative_timeout_secs: 5,
         }
     }
 }

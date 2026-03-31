@@ -6,6 +6,7 @@
 pub mod api;
 pub mod cdn;
 pub mod client;
+pub mod token_pool;
 pub mod types;
 
 use std::sync::Arc;
@@ -16,6 +17,7 @@ use reqwest::ClientBuilder;
 
 use crate::config::Config;
 use client::{RateLimiter, RdClient, RdClientConfig};
+use token_pool::TokenPool;
 
 // ─── RealDebrid ───────────────────────────────────────────────────────────────
 
@@ -32,6 +34,8 @@ pub struct RealDebrid {
     pub torrents_rate_limiter: Arc<RateLimiter>,
     /// Global cap on concurrent CDN calls on [`Self::download_client`] (chunk `Range` GETs and link verify).
     pub connection_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Round-robin token pool for the download client; rotated on bandwidth limit responses.
+    pub token_pool: Arc<TokenPool>,
     pub config: Arc<Config>,
 }
 
@@ -69,6 +73,7 @@ impl RealDebrid {
                 max_retries,
                 timeout,
                 is_download_client: false,
+                download_token_pool: None,
             },
         ));
 
@@ -86,6 +91,7 @@ impl RealDebrid {
                 max_retries,
                 timeout: Duration::from_secs(30),
                 is_download_client: false,
+                download_token_pool: None,
             },
         ));
 
@@ -98,14 +104,18 @@ impl RealDebrid {
             .pool_max_idle_per_host(32)
             .build()?;
 
+        // Build the token pool first so we can share it with the download client config.
+        let token_pool = Arc::new(TokenPool::new(cfg.all_download_tokens()));
+
         let download_client = Arc::new(RdClient::new(
             download_http,
             RdClientConfig {
-                token: String::new(), // no auth on download client
+                token: String::new(), // no auth header — pool handles bearer token
                 rate_limiter: None,
                 max_retries,
                 timeout: Duration::from_secs(cfg.api.timeout_secs),
                 is_download_client: true,
+                download_token_pool: Some(token_pool.clone()),
             },
         ));
 
@@ -118,6 +128,7 @@ impl RealDebrid {
             download_client,
             torrents_rate_limiter: torrents_rl,
             connection_semaphore,
+            token_pool,
             config: Arc::new(cfg.clone()),
         })
     }
