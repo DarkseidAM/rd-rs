@@ -1,15 +1,7 @@
 //! FUSE constants and inode ranges.
 
-use std::time::Duration;
-
 /// Top-level directory name served under the mount point.
 pub(crate) const ALL_DIR: &str = "__all__";
-
-/// Attribute cache TTL — matches Go's `attr_timeout = 1m`.
-pub(crate) const ATTR_TTL: Duration = Duration::from_secs(60);
-
-/// Directory entry cache TTL — matches Go's `dir_cache_time = 10m`.
-pub(crate) const ENTRY_TTL: Duration = Duration::from_secs(600);
 
 /// Inode ranges (stable for the FUSE layer). Exposed for tests.
 pub const INODE_ROOT: u64 = 1;

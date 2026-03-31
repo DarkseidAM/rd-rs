@@ -5,9 +5,7 @@ use std::ffi::OsStr;
 use fuse3::raw::prelude::*;
 use fuse3::{Errno, Result as FuseResult};
 
-use crate::fuse::consts::{
-    ALL_DIR, ATTR_TTL, ENTRY_TTL, INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE,
-};
+use crate::fuse::consts::{ALL_DIR, INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE};
 use crate::fuse::fs::RdFs;
 
 pub(super) async fn lookup(
@@ -22,7 +20,7 @@ pub(super) async fn lookup(
         INODE_ROOT => {
             if name == ALL_DIR {
                 return Ok(ReplyEntry {
-                    ttl: ENTRY_TTL,
+                    ttl: fs.entry_ttl,
                     attr: fs.dir_attr(INODE_ALL),
                     generation: 0,
                 });
@@ -38,7 +36,7 @@ pub(super) async fn lookup(
                     let inode = fs.get_or_assign_torrent_inode(key);
                     let mtime = RdFs::torrent_mtime(&mt);
                     return Ok(ReplyEntry {
-                        ttl: ENTRY_TTL,
+                        ttl: fs.entry_ttl,
                         attr: {
                             let mut a = fs.dir_attr(inode);
                             a.mtime = mtime;
@@ -65,7 +63,7 @@ pub(super) async fn lookup(
                     let mtime = RdFs::torrent_mtime(&mt);
                     let size = file.bytes.max(0) as u64;
                     return Ok(ReplyEntry {
-                        ttl: ENTRY_TTL,
+                        ttl: fs.entry_ttl,
                         attr: fs.file_attr(RdFs::file_inode(torrent_index, fi as u64), size, mtime),
                         generation: 0,
                     });
@@ -121,7 +119,7 @@ pub(super) async fn getattr(
     };
 
     Ok(ReplyAttr {
-        ttl: ATTR_TTL,
+        ttl: fs.attr_ttl,
         attr,
     })
 }

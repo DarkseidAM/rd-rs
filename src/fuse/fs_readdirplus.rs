@@ -4,9 +4,7 @@ use fuse3::Result as FuseResult;
 use fuse3::raw::prelude::*;
 use futures_util::stream::{self};
 
-use crate::fuse::consts::{
-    ALL_DIR, ATTR_TTL, ENTRY_TTL, INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE,
-};
+use crate::fuse::consts::{ALL_DIR, INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE};
 use crate::fuse::fs::RdFs;
 
 pub(super) async fn readdirplus<'a>(
@@ -31,8 +29,8 @@ pub(super) async fn readdirplus<'a>(
                     name: ".".into(),
                     offset: 1,
                     attr: fs.dir_attr(INODE_ROOT),
-                    entry_ttl: ENTRY_TTL,
-                    attr_ttl: ATTR_TTL,
+                    entry_ttl: fs.entry_ttl,
+                    attr_ttl: fs.attr_ttl,
                 },
                 DirectoryEntryPlus {
                     inode: INODE_ROOT,
@@ -41,8 +39,8 @@ pub(super) async fn readdirplus<'a>(
                     name: "..".into(),
                     offset: 2,
                     attr: fs.dir_attr(INODE_ROOT),
-                    entry_ttl: ENTRY_TTL,
-                    attr_ttl: ATTR_TTL,
+                    entry_ttl: fs.entry_ttl,
+                    attr_ttl: fs.attr_ttl,
                 },
                 DirectoryEntryPlus {
                     inode: INODE_ALL,
@@ -51,8 +49,8 @@ pub(super) async fn readdirplus<'a>(
                     name: ALL_DIR.into(),
                     offset: 3,
                     attr: fs.dir_attr(INODE_ALL),
-                    entry_ttl: ENTRY_TTL,
-                    attr_ttl: ATTR_TTL,
+                    entry_ttl: fs.entry_ttl,
+                    attr_ttl: fs.attr_ttl,
                 },
             ]
         }
@@ -66,8 +64,8 @@ pub(super) async fn readdirplus<'a>(
                     name: ".".into(),
                     offset: 1,
                     attr: fs.dir_attr(INODE_ALL),
-                    entry_ttl: ENTRY_TTL,
-                    attr_ttl: ATTR_TTL,
+                    entry_ttl: fs.entry_ttl,
+                    attr_ttl: fs.attr_ttl,
                 },
                 DirectoryEntryPlus {
                     inode: INODE_ROOT,
@@ -76,8 +74,8 @@ pub(super) async fn readdirplus<'a>(
                     name: "..".into(),
                     offset: 2,
                     attr: fs.dir_attr(INODE_ROOT),
-                    entry_ttl: ENTRY_TTL,
-                    attr_ttl: ATTR_TTL,
+                    entry_ttl: fs.entry_ttl,
+                    attr_ttl: fs.attr_ttl,
                 },
             ];
             let start_idx = (offset.max(2) - 2) as usize;
@@ -92,8 +90,8 @@ pub(super) async fn readdirplus<'a>(
                         name: unique_name.clone(),
                         offset: (index + 3) as i64,
                         attr: fs.dir_attr(inode),
-                        entry_ttl: ENTRY_TTL,
-                        attr_ttl: ATTR_TTL,
+                        entry_ttl: fs.entry_ttl,
+                        attr_ttl: fs.attr_ttl,
                     });
                 }
             }
@@ -122,8 +120,8 @@ pub(super) async fn readdirplus<'a>(
                         a.atime = mtime;
                         a
                     },
-                    entry_ttl: ENTRY_TTL,
-                    attr_ttl: ATTR_TTL,
+                    entry_ttl: fs.entry_ttl,
+                    attr_ttl: fs.attr_ttl,
                 },
                 DirectoryEntryPlus {
                     inode: INODE_ALL,
@@ -132,8 +130,8 @@ pub(super) async fn readdirplus<'a>(
                     name: "..".into(),
                     offset: 2,
                     attr: fs.dir_attr(INODE_ALL),
-                    entry_ttl: ENTRY_TTL,
-                    attr_ttl: ATTR_TTL,
+                    entry_ttl: fs.entry_ttl,
+                    attr_ttl: fs.attr_ttl,
                 },
             ];
             for (fi, file) in mt.selected_files().into_iter().enumerate() {
@@ -149,8 +147,8 @@ pub(super) async fn readdirplus<'a>(
                         file.bytes.max(0) as u64,
                         mtime,
                     ),
-                    entry_ttl: ENTRY_TTL,
-                    attr_ttl: ATTR_TTL,
+                    entry_ttl: fs.entry_ttl,
+                    attr_ttl: fs.attr_ttl,
                 });
             }
             entries

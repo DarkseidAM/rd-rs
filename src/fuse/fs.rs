@@ -61,6 +61,10 @@ pub struct RdFs {
     pub(crate) next_fh: AtomicU64,
     /// Per-`fh` read-ahead buffer for file opens (see `vfs_read_buffer`).
     pub(crate) open_files: DashMap<u64, Arc<tokio::sync::Mutex<VfsReadBuffer>>>,
+    /// Kernel attribute cache TTL (from `vfs.attr_timeout_secs`).
+    pub(crate) attr_ttl: Duration,
+    /// Kernel directory-entry cache TTL (from `vfs.entry_timeout_secs`).
+    pub(crate) entry_ttl: Duration,
 }
 
 impl RdFs {
@@ -71,6 +75,7 @@ impl RdFs {
         cache: Arc<Cache>,
     ) -> Self {
         let torrents = torrent_manager.torrents.clone();
+        let vfs = config.load().vfs.clone();
         Self {
             torrents,
             torrent_manager,
@@ -88,6 +93,8 @@ impl RdFs {
             broken_read_warn_ts: DashMap::new(),
             next_fh: AtomicU64::new(1),
             open_files: DashMap::new(),
+            attr_ttl: Duration::from_secs(vfs.attr_timeout_secs),
+            entry_ttl: Duration::from_secs(vfs.entry_timeout_secs),
         }
     }
 }

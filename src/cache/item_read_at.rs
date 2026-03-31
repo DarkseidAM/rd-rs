@@ -83,11 +83,11 @@ pub(crate) async fn read_at(
                 }
 
                 if spawned_task.is_none() {
-                    match tokio::time::timeout(std::time::Duration::from_millis(500), notified).await {
-                        Ok(_) => {} // Notified in time, loop around
+                    match tokio::time::timeout(std::time::Duration::from_millis(5000), notified).await {
+                        Ok(_) => {} // Progress was made
                         Err(_) => {
-                            // 500ms Adaptive Kicker: Existing worker is stalling or too far behind.
-                            tracing::warn!("fuse read blocked > 500ms at {offset}; kicking priority downloader");
+                            // 5s Adaptive Kicker: Existing worker is stalling or too far behind.
+                            tracing::warn!("fuse read blocked > 5s at {offset}; kicking priority downloader");
 
                             let (handle, new_session) = spawn_worker(
                                 item, offset, end, fetch_until, base_chunk, read_ahead, max_parallel_streams,

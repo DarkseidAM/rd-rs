@@ -59,6 +59,12 @@ pub(super) fn default_chunk_size() -> String {
 pub(super) fn default_parallel_streams() -> u32 {
     8
 }
+pub(super) fn default_attr_timeout_secs() -> u64 {
+    60
+}
+pub(super) fn default_entry_timeout_secs() -> u64 {
+    600
+}
 pub(super) fn default_mount_path() -> PathBuf {
     PathBuf::from("/mnt/zurg")
 }

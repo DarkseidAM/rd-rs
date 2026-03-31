@@ -8,6 +8,7 @@ use tokio::time::sleep;
 
 use super::errors::{ApiError, DownloadError, RdError};
 use super::rate_limit::{RateLimiter, backoff};
+use crate::rd::token_pool::TokenPool;
 
 pub struct RdClientConfig {
     pub token: String,
@@ -15,6 +16,8 @@ pub struct RdClientConfig {
     pub max_retries: u32,
     pub timeout: Duration,
     pub is_download_client: bool,
+    /// Token pool for the download client (rotated on bandwidth limit). `None` for other clients.
+    pub download_token_pool: Option<Arc<TokenPool>>,
 }
 
 pub struct RdClient {
@@ -32,12 +35,28 @@ impl RdClient {
         build: impl Fn() -> reqwest::RequestBuilder,
     ) -> Result<Response, RdError> {
         let mut attempt: u32 = 0;
+        // For download client: track how many token rotations have been attempted.
+        let max_rotations = self
+            .config
+            .download_token_pool
+            .as_ref()
+            .map(|p| p.len().saturating_sub(1))
+            .unwrap_or(0);
+        let mut rotations: usize = 0;
+
         loop {
             if let Some(rl) = &self.config.rate_limiter {
                 rl.wait().await;
             }
 
-            let req = build().bearer_auth(&self.config.token);
+            let active_token = self
+                .config
+                .download_token_pool
+                .as_ref()
+                .map(|p| p.current())
+                .unwrap_or(self.config.token.as_str());
+
+            let req = build().bearer_auth(active_token);
 
             let resp = match req.send().await {
                 Ok(r) => r,
@@ -67,10 +86,25 @@ impl RdClient {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
                     .to_string();
-                return Err(RdError::Download(DownloadError::from_header(
-                    &x_err,
-                    status.as_u16(),
-                )));
+                let dl_err = DownloadError::from_header(&x_err, status.as_u16());
+                let rd_err = RdError::Download(dl_err);
+
+                // On bandwidth limit: rotate to next token and retry (if pool has extras).
+                if rd_err.is_bandwidth_limited()
+                    && let Some(pool) = &self.config.download_token_pool
+                    && rotations < max_rotations
+                    && pool.rotate()
+                {
+                    rotations += 1;
+                    tracing::warn!(
+                        rotation = rotations,
+                        max_rotations,
+                        "Download bandwidth limit hit — rotating to next token"
+                    );
+                    attempt = 0;
+                    continue;
+                }
+                return Err(rd_err);
             }
 
             if status.is_success() {
