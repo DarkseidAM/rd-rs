@@ -13,10 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use reqwest::ClientBuilder;
 
 use crate::config::Config;
-use client::{RateLimiter, RdClient, RdClientConfig};
+use client::{Credentials, RateLimiter, RdClient, RdClientConfig};
 use token_pool::TokenPool;
 
 // ─── RealDebrid ───────────────────────────────────────────────────────────────
@@ -38,6 +39,8 @@ pub struct RealDebrid {
     pub token_pool: Arc<TokenPool>,
     pub config: Arc<Config>,
     pub ranked_hosts: Arc<arc_swap::ArcSwapOption<cdn::RankedHosts>>,
+    /// Shared, hot-swappable credentials. Updated atomically by [`reload_credentials`](Self::reload_credentials).
+    pub credentials: Arc<ArcSwap<Credentials>>,
 }
 
 impl RealDebrid {
@@ -46,7 +49,7 @@ impl RealDebrid {
     }
 
     /// Like [`new`](Self::new), but sets the global CDN download connection semaphore
-    /// (production uses 30 to stay under RD’s ~32 connection cap).
+    /// (production uses 30 to stay under RD's ~32 connection cap).
     pub fn new_with_connection_limit(
         cfg: &Config,
         max_concurrent_download_connections: usize,
@@ -60,6 +63,16 @@ impl RealDebrid {
         let timeout = Duration::from_secs(cfg.api.timeout_secs);
         let max_retries = cfg.api.retries_until_failed;
 
+        // Shared credentials — all three clients point at the same ArcSwap.
+        let credentials = Arc::new(ArcSwap::from_pointee(Credentials {
+            token: Arc::new(cfg.token.clone()),
+            download_tokens: cfg
+                .all_download_tokens()
+                .into_iter()
+                .map(Arc::new)
+                .collect(),
+        }));
+
         // ── api_client: HTTP/2, rate-limited, authenticated ────────────────
         let api_http = ClientBuilder::new()
             .timeout(timeout)
@@ -69,7 +82,7 @@ impl RealDebrid {
         let api_client = Arc::new(RdClient::new(
             api_http,
             RdClientConfig {
-                token: cfg.token.clone(),
+                credentials: credentials.clone(),
                 rate_limiter: Some(api_rl),
                 max_retries,
                 timeout,
@@ -87,7 +100,7 @@ impl RealDebrid {
         let unrestrict_client = Arc::new(RdClient::new(
             unrestrict_http,
             RdClientConfig {
-                token: cfg.token.clone(),
+                credentials: credentials.clone(),
                 rate_limiter: None,
                 max_retries,
                 timeout: Duration::from_secs(30),
@@ -106,12 +119,12 @@ impl RealDebrid {
             .build()?;
 
         // Build the token pool first so we can share it with the download client config.
-        let token_pool = Arc::new(TokenPool::new(cfg.all_download_tokens()));
+        let token_pool = Arc::new(TokenPool::new(cfg.all_download_tokens())); // TokenPool::new wraps in Arc internally
 
         let download_client = Arc::new(RdClient::new(
             download_http,
             RdClientConfig {
-                token: String::new(), // no auth header — pool handles bearer token
+                credentials: credentials.clone(),
                 rate_limiter: None,
                 max_retries,
                 timeout: Duration::from_secs(cfg.api.timeout_secs),
@@ -132,6 +145,27 @@ impl RealDebrid {
             token_pool,
             config: Arc::new(cfg.clone()),
             ranked_hosts: Arc::new(arc_swap::ArcSwapOption::new(None)),
+            credentials,
         })
+    }
+
+    /// Hot-swaps the RD credentials (token + download tokens) without disrupting
+    /// any HTTP connections, semaphores, or CDN state.
+    ///
+    /// Safe to call from the config-watcher task; all three clients see the new
+    /// credentials on their very next `execute()` loop iteration.
+    pub fn reload_credentials(&self, new_cfg: &Config) {
+        let arc_tokens: Vec<Arc<String>> = new_cfg
+            .all_download_tokens()
+            .into_iter()
+            .map(Arc::new)
+            .collect();
+        let new_creds = Credentials {
+            token: Arc::new(new_cfg.token.clone()),
+            download_tokens: arc_tokens.clone(),
+        };
+        self.credentials.store(Arc::new(new_creds));
+        self.token_pool.update_tokens(arc_tokens);
+        tracing::info!("RD credentials hot-reloaded (token rotated, pool refreshed)");
     }
 }

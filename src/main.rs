@@ -120,18 +120,33 @@ async fn run_fuse_mount() -> Result<()> {
     let db = Db::open(&db_path).await?;
     db.init_schema().await?;
     tracing::info!("SQLite schema initialised (WAL) at: {}", db_path.display());
-
     let config = Arc::new(ArcSwap::from_pointee(cfg.clone()));
+
+    let rd_client = rd_rs::rd::RealDebrid::new(&cfg)?;
+    tracing::info!("RealDebrid clients ready");
+    rd_rs::rd::cdn::run_network_test(&rd_client, &cfg).await;
+    if let Some(pin) = rd_rs::rd::cdn::RankedHosts::try_load() {
+        rd_client.ranked_hosts.store(Some(pin));
+    }
+    let rd_client = Arc::new(rd_client);
+
     let _config_watcher = match Config::watch("config.toml") {
         Ok((mut rx, watcher)) => {
             let config_clone = config.clone();
+            let rd_clone = rd_client.clone();
             tokio::spawn(async move {
                 while rx.changed().await.is_ok() {
+                    // 30-second debounce: absorbs rapid saves (e.g., editor backup writes)
+                    // so we don't thrash credential updates on every keystroke.
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    // watch channels hold only the latest value; one call picks up the
+                    // most recent config and marks it as seen.
                     let updated = rx.borrow_and_update().clone();
+                    rd_clone.reload_credentials(&updated);
                     config_clone.store(Arc::new(updated));
                 }
             });
-            tracing::info!("Config hot-reload enabled (watching config.toml)");
+            tracing::info!("Config hot-reload enabled (watching config.toml, 30s debounce)");
             Some(watcher)
         }
         Err(_) => {
@@ -140,14 +155,6 @@ async fn run_fuse_mount() -> Result<()> {
         }
     };
 
-    let rd_client = rd_rs::rd::RealDebrid::new(&cfg)?;
-    tracing::info!("RealDebrid clients ready");
-    rd_rs::rd::cdn::run_network_test(&rd_client, &cfg).await;
-    if let Some(pin) = rd_rs::rd::cdn::RankedHosts::try_load() {
-        rd_client.ranked_hosts.store(Some(pin));
-    }
-
-    let rd_client = Arc::new(rd_client);
     let db = Arc::new(db.conn);
 
     tracing::info!("Starting TorrentManager...");

@@ -3,15 +3,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use reqwest::{Client, Response};
 use tokio::time::sleep;
 
+use super::credentials::Credentials;
 use super::errors::{ApiError, DownloadError, RdError};
 use super::rate_limit::{RateLimiter, backoff};
 use crate::rd::token_pool::TokenPool;
 
 pub struct RdClientConfig {
-    pub token: String,
+    /// Shared, hot-swappable credentials (token + download token list).
+    pub credentials: Arc<ArcSwap<Credentials>>,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub max_retries: u32,
     pub timeout: Duration,
@@ -49,14 +52,16 @@ impl RdClient {
                 rl.wait().await;
             }
 
+            // Load credentials atomically on every iteration — zero-cost ArcSwap read.
+            let creds = self.config.credentials.load();
             let active_token = self
                 .config
                 .download_token_pool
                 .as_ref()
                 .map(|p| p.current())
-                .unwrap_or(self.config.token.as_str());
+                .unwrap_or_else(|| creds.token.clone());
 
-            let req = build(use_fallback).bearer_auth(active_token);
+            let req = build(use_fallback).bearer_auth(active_token.as_str());
 
             let resp = match req.send().await {
                 Ok(r) => r,
