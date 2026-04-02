@@ -153,7 +153,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                         loop {
                             interval.tick().await;
                             if watchdog_tx.is_closed() { return; }
-                            let last = lp_clone.load(Ordering::Relaxed);
+                            let last = lp_clone.load(Ordering::Acquire);
                             let now = elapsed_nanos();
                             if now.saturating_sub(last) >= timeout_nanos {
                                 let secs = no_progress_timeout_secs();
@@ -169,7 +169,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                     });
 
                     // Start the request, bounded by watchdog
-                    last_progress.store(elapsed_nanos(), Ordering::Relaxed);
+                    last_progress.store(elapsed_nanos(), Ordering::Release);
                     let url_snapshot = {
                         let g = live_url.read().await;
                         g.clone()
@@ -262,7 +262,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
 
                         match chunk_res {
                             Ok(Some(data)) => {
-                                last_progress.store(elapsed_nanos(), Ordering::Relaxed);
+                                last_progress.store(elapsed_nanos(), Ordering::Release);
                                 if let Err(e) = item_clone.write_range(current_pos, &data[..]) {
                                     download_error = Some(e);
                                     break;
