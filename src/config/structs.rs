@@ -125,7 +125,7 @@ pub struct ApiConfig {
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
-            base_url: "https://api.real-debrid.com".to_string(),
+            base_url: defaults::default_base_url(),
             rate_limit_per_minute: 250,
             torrents_rate_limit_per_minute: 75,
             fetch_torrents_page_size: 5000,

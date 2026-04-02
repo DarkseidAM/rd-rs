@@ -10,7 +10,10 @@ use crate::rd::types::{Torrent, TorrentInfo, User};
 
 impl RealDebrid {
     pub async fn get_user(&self) -> Result<User> {
-        let url = format!("{}/rest/1.0/user", self.config.api.base_url);
+        let url = format!(
+            "{}/rest/1.0/user",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .api_client
             .execute(|_| self.api_client.client.get(&url))
@@ -27,7 +30,7 @@ impl RealDebrid {
             .as_secs();
         let url = format!(
             "{}/rest/1.0/torrents?_t={ts}&page={page}&limit={limit}",
-            self.config.api.base_url
+            self.config.api.base_url.trim_end_matches('/')
         );
 
         self.torrents_rate_limiter.wait().await;
@@ -108,7 +111,10 @@ impl RealDebrid {
     }
 
     pub async fn get_torrent_info(&self, id: &str) -> Result<TorrentInfo, RdError> {
-        let url = format!("{}/rest/1.0/torrents/info/{id}", self.config.api.base_url);
+        let url = format!(
+            "{}/rest/1.0/torrents/info/{id}",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .api_client
             .execute(|_| self.api_client.client.get(&url))

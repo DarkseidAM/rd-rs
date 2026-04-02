@@ -23,7 +23,10 @@ impl RealDebrid {
         }
 
         let form_body = format!("link={}", urlencoding_encode(link));
-        let url = format!("{}/rest/1.0/unrestrict/link", self.config.api.base_url);
+        let url = format!(
+            "{}/rest/1.0/unrestrict/link",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .unrestrict_client
             .execute(|_| {
@@ -52,7 +55,7 @@ impl RealDebrid {
     pub async fn select_torrent_files(&self, id: &str, files: &str) -> Result<(), RdError> {
         let url = format!(
             "{}/rest/1.0/torrents/selectFiles/{id}",
-            self.config.api.base_url
+            self.config.api.base_url.trim_end_matches('/')
         );
         let body = format!("files={files}");
         self.api_client
@@ -68,7 +71,10 @@ impl RealDebrid {
     }
 
     pub async fn delete_torrent(&self, id: &str) -> Result<(), RdError> {
-        let url = format!("{}/rest/1.0/torrents/delete/{id}", self.config.api.base_url);
+        let url = format!(
+            "{}/rest/1.0/torrents/delete/{id}",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         self.api_client
             .execute(|_| self.api_client.client.delete(&url))
             .await?;
@@ -77,7 +83,10 @@ impl RealDebrid {
 
     pub async fn add_magnet(&self, hash: &str) -> Result<MagnetResponse, RdError> {
         let body = format!("magnet=magnet%3A%3Fxt%3Durn%3Abtih%3A{hash}");
-        let url = format!("{}/rest/1.0/torrents/addMagnet", self.config.api.base_url);
+        let url = format!(
+            "{}/rest/1.0/torrents/addMagnet",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .api_client
             .execute(|_| {
@@ -93,7 +102,10 @@ impl RealDebrid {
     }
 
     pub async fn get_active_count(&self) -> Result<ActiveTorrentCountResponse> {
-        let url = format!("{}/rest/1.0/torrents/activeCount", self.config.api.base_url);
+        let url = format!(
+            "{}/rest/1.0/torrents/activeCount",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .api_client
             .execute(|_| self.api_client.client.get(&url))
@@ -105,7 +117,10 @@ impl RealDebrid {
     }
 
     pub async fn get_traffic_details(&self) -> Result<TrafficDetailsResponse> {
-        let url = format!("{}/rest/1.0/traffic/details", self.config.api.base_url);
+        let url = format!(
+            "{}/rest/1.0/traffic/details",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .api_client
             .execute(|_| self.api_client.client.get(&url))
@@ -118,7 +133,9 @@ impl RealDebrid {
     pub async fn get_downloads(&self, page: u32, limit: u32) -> Result<Vec<DownloadItem>> {
         let url = format!(
             "{}/rest/1.0/downloads?page={}&limit={}",
-            self.config.api.base_url, page, limit
+            self.config.api.base_url.trim_end_matches('/'),
+            page,
+            limit
         );
         let resp = self
             .api_client
