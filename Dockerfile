@@ -32,7 +32,7 @@ RUN set -ex; \
         export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc; \
         export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++; \
         cargo build --release --locked --target aarch64-unknown-linux-gnu --bin rd-rs; \
-        strip target/aarch64-unknown-linux-gnu/release/rd-rs; \
+        aarch64-linux-gnu-strip target/aarch64-unknown-linux-gnu/release/rd-rs; \
         cp target/aarch64-unknown-linux-gnu/release/rd-rs target/release/rd-rs; \
     else \
         cargo build --release --locked --target x86_64-unknown-linux-gnu --bin rd-rs; \
