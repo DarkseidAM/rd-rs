@@ -10,13 +10,10 @@ use crate::rd::types::{Torrent, TorrentInfo, User};
 
 impl RealDebrid {
     pub async fn get_user(&self) -> Result<User> {
+        let url = format!("{}/rest/1.0/user", self.config.api.base_url);
         let resp = self
             .api_client
-            .execute(|_| {
-                self.api_client
-                    .client
-                    .get(format!("{}/rest/1.0/user", self.config.api.base_url))
-            })
+            .execute(|_| self.api_client.client.get(&url))
             .await
             .context("get_user")?;
         let user: User = resp.json().await.context("get_user: decode")?;

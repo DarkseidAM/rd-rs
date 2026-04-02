@@ -23,15 +23,13 @@ impl RealDebrid {
         }
 
         let form_body = format!("link={}", urlencoding_encode(link));
+        let url = format!("{}/rest/1.0/unrestrict/link", self.config.api.base_url);
         let resp = self
             .unrestrict_client
             .execute(|_| {
                 self.unrestrict_client
                     .client
-                    .post(format!(
-                        "{}/rest/1.0/unrestrict/link",
-                        self.config.api.base_url
-                    ))
+                    .post(&url)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .body(form_body.clone())
             })
@@ -79,15 +77,13 @@ impl RealDebrid {
 
     pub async fn add_magnet(&self, hash: &str) -> Result<MagnetResponse, RdError> {
         let body = format!("magnet=magnet%3A%3Fxt%3Durn%3Abtih%3A{hash}");
+        let url = format!("{}/rest/1.0/torrents/addMagnet", self.config.api.base_url);
         let resp = self
             .api_client
             .execute(|_| {
                 self.api_client
                     .client
-                    .post(format!(
-                        "{}/rest/1.0/torrents/addMagnet",
-                        self.config.api.base_url
-                    ))
+                    .post(&url)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .body(body.clone())
             })
@@ -97,14 +93,10 @@ impl RealDebrid {
     }
 
     pub async fn get_active_count(&self) -> Result<ActiveTorrentCountResponse> {
+        let url = format!("{}/rest/1.0/torrents/activeCount", self.config.api.base_url);
         let resp = self
             .api_client
-            .execute(|_| {
-                self.api_client.client.get(format!(
-                    "{}/rest/1.0/torrents/activeCount",
-                    self.config.api.base_url
-                ))
-            })
+            .execute(|_| self.api_client.client.get(&url))
             .await
             .context("get_active_count")?;
         let r: ActiveTorrentCountResponse =
@@ -113,14 +105,10 @@ impl RealDebrid {
     }
 
     pub async fn get_traffic_details(&self) -> Result<TrafficDetailsResponse> {
+        let url = format!("{}/rest/1.0/traffic/details", self.config.api.base_url);
         let resp = self
             .api_client
-            .execute(|_| {
-                self.api_client.client.get(format!(
-                    "{}/rest/1.0/traffic/details",
-                    self.config.api.base_url
-                ))
-            })
+            .execute(|_| self.api_client.client.get(&url))
             .await
             .context("get_traffic_details")?;
         let t: TrafficDetailsResponse = resp.json().await.context("get_traffic_details: decode")?;

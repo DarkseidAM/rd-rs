@@ -47,7 +47,9 @@ pub fn diff(
 
     for key in fresh_keys.difference(&current_keys) {
         if let Some((t, ids)) = fresh_map.get(key) {
-            added.push((t.clone(), ids.iter().cloned().collect()));
+            let mut ids_vec: Vec<_> = ids.iter().cloned().collect();
+            ids_vec.sort();
+            added.push((t.clone(), ids_vec));
         }
     }
 
@@ -65,7 +67,9 @@ pub fn diff(
             || current_mt.rd_ids.iter().any(|id| !fresh_ids.contains(id));
 
         if status_changed || progress_changed || ids_changed {
-            changed.push((fresh_t.clone(), fresh_ids.iter().cloned().collect()));
+            let mut ids_vec: Vec<_> = fresh_ids.iter().cloned().collect();
+            ids_vec.sort();
+            changed.push((fresh_t.clone(), ids_vec));
         }
     }
 
