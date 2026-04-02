@@ -3,8 +3,9 @@ use crate::cache::link_heal;
 use crate::rd::RealDebrid;
 use crate::rd::api::UnrestrictCache;
 use anyhow::Result;
+use parking_lot::Mutex as ParkingMutex;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{self, Duration};
 
@@ -19,6 +20,16 @@ pub(crate) const MAX_DOWNLOAD_RETRIES: u32 = 3;
 #[inline]
 fn no_progress_timeout_secs() -> u64 {
     NO_PROGRESS_TIMEOUT.as_secs()
+}
+
+/// Monotonic elapsed nanos since the first call to this function.
+/// Cheaper than `chrono::Utc::now()` — pure userspace, no epoch conversion.
+#[inline]
+fn elapsed_nanos() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64
 }
 
 /// Arguments for `run_downloader`, grouped to stay under clippy's arg-count limit.
@@ -63,7 +74,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
     // Compute exactly which slices of this range we are missing.
     let mut missing_slices = std::collections::VecDeque::new();
     {
-        let r = item.ranges.read().unwrap();
+        let r = item.ranges.read();
         let mut pos = start;
         while pos < target_end {
             if let Some((miss_start, miss_end)) = r.find_missing(pos, target_end) {
@@ -79,8 +90,11 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
         return Ok(());
     }
 
-    let queue = Arc::new(std::sync::Mutex::new(missing_slices));
+    let queue = Arc::new(ParkingMutex::new(missing_slices));
     let num_workers = max_parallel_streams.max(1);
+    // Shared adaptive multiplier — all workers read/write the same value so a
+    // CDN stall on any one worker immediately reduces chunk sizes for all.
+    let shared_multiplier = Arc::new(AtomicU64::new(1));
 
     let mut join_set = tokio::task::JoinSet::new();
 
@@ -94,9 +108,9 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
         let heal_rem = Arc::clone(&heal_remaining);
         let item_clone = Arc::clone(item);
         let mut p_rx = pause_rx.clone();
+        let mult = Arc::clone(&shared_multiplier);
 
         join_set.spawn(async move {
-            let mut multiplier: u64 = 1;
 
             loop {
                 if *p_rx.borrow() {
@@ -104,8 +118,9 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                 }
 
                 let chunk_opt = {
-                    let mut q = queue_clone.lock().unwrap();
+                    let mut q = queue_clone.lock();
                     if let Some((slice_start, slice_end)) = q.pop_front() {
+                        let multiplier = mult.load(Ordering::Relaxed);
                         let chunk_size = (base_chunk * multiplier).min(slice_end - slice_start);
                         let chunk_end = slice_start + chunk_size;
                         if chunk_end < slice_end {
@@ -127,19 +142,20 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
 
                     let range_header = format!("bytes={}-{}", chunk_start, chunk_end - 1);
 
-                    // --- No-progress watchdog ---
-                    let last_progress = Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis()));
+                    // --- No-progress watchdog (monotonic, no chrono syscall) ---
+                    let last_progress = Arc::new(AtomicU64::new(elapsed_nanos()));
                     let lp_clone = Arc::clone(&last_progress);
                     let (watchdog_tx, mut watchdog_rx) = tokio::sync::oneshot::channel::<()>();
 
                     let watchdog = tokio::spawn(async move {
                         let mut interval = time::interval(NO_PROGRESS_CHECK);
+                        let timeout_nanos = NO_PROGRESS_TIMEOUT.as_nanos() as u64;
                         loop {
                             interval.tick().await;
                             if watchdog_tx.is_closed() { return; }
-                            let last = lp_clone.load(Ordering::Relaxed);
-                            let now = chrono::Utc::now().timestamp_millis();
-                            if (now - last) as u64 >= NO_PROGRESS_TIMEOUT.as_millis() as u64 {
+                            let last = lp_clone.load(Ordering::Acquire);
+                            let now = elapsed_nanos();
+                            if now.saturating_sub(last) >= timeout_nanos {
                                 let secs = no_progress_timeout_secs();
                                 tracing::warn!(
                                     stall_timeout_secs = secs,
@@ -153,7 +169,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                     });
 
                     // Start the request, bounded by watchdog
-                    last_progress.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                    last_progress.store(elapsed_nanos(), Ordering::Release);
                     let url_snapshot = {
                         let g = live_url.read().await;
                         g.clone()
@@ -190,11 +206,11 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                         ));
                                     }
 
-                                    multiplier = 1;
+                                    mult.store(1, Ordering::Relaxed);
                                     let chunk_size = chunk_end - chunk_start;
                                     if chunk_size > base_chunk {
                                         let new_chunk_end = chunk_start + base_chunk;
-                                        queue_clone.lock().unwrap().push_front((new_chunk_end, chunk_end));
+                                        queue_clone.lock().push_front((new_chunk_end, chunk_end));
                                         chunk_end = new_chunk_end;
                                     }
                                     continue;
@@ -217,11 +233,11 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                     "stream stalled (headers): no progress for {secs}s at {chunk_start} ({range_header})"
                                 ));
                             }
-                            multiplier = 1;
+                            mult.store(1, Ordering::Relaxed);
                             let chunk_size = chunk_end - chunk_start;
                             if chunk_size > base_chunk {
                                 let new_chunk_end = chunk_start + base_chunk;
-                                queue_clone.lock().unwrap().push_front((new_chunk_end, chunk_end));
+                                queue_clone.lock().push_front((new_chunk_end, chunk_end));
                                 chunk_end = new_chunk_end;
                             }
                             continue;
@@ -246,7 +262,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
 
                         match chunk_res {
                             Ok(Some(data)) => {
-                                last_progress.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                                last_progress.store(elapsed_nanos(), Ordering::Release);
                                 if let Err(e) = item_clone.write_range(current_pos, &data[..]) {
                                     download_error = Some(e);
                                     break;
@@ -294,11 +310,11 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                             if retries >= MAX_DOWNLOAD_RETRIES {
                                 return Err(e);
                             }
-                            multiplier = 1;
+                            mult.store(1, Ordering::Relaxed);
                             let chunk_size = chunk_end - chunk_start;
                             if chunk_size > base_chunk {
                                 let new_chunk_end = chunk_start + base_chunk;
-                                queue_clone.lock().unwrap().push_front((new_chunk_end, chunk_end));
+                                queue_clone.lock().push_front((new_chunk_end, chunk_end));
                                 chunk_end = new_chunk_end;
                             }
                             time::sleep(Duration::from_secs(retries as u64 * 2)).await;
@@ -306,7 +322,10 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                     }
                 } // End retry loop
 
-                multiplier = (multiplier * 2).min(16);
+                // Grow the shared multiplier on success (up to 16×).
+                let _ = mult.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |m| {
+                    Some((m * 2).min(16))
+                });
             } // End chunk loop
         });
     }
