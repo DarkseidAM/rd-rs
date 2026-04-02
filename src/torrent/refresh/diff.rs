@@ -20,20 +20,22 @@ pub fn diff(
     current: &dashmap::DashMap<String, Arc<ManagedTorrent>>,
     fresh: &[Torrent],
 ) -> DiffResult {
-    let mut fresh_map: HashMap<String, (Torrent, Vec<String>)> = HashMap::new();
+    let mut fresh_map: HashMap<String, (Torrent, HashSet<String>)> = HashMap::new();
     for t in fresh {
         let key = access_key(&t.hash, &t.name);
         fresh_map
             .entry(key)
             .and_modify(|(existing_t, ids)| {
-                if !ids.contains(&t.id) {
-                    ids.push(t.id.clone());
-                }
+                ids.insert(t.id.clone());
                 if t.progress > existing_t.progress {
                     *existing_t = t.clone();
                 }
             })
-            .or_insert_with(|| (t.clone(), vec![t.id.clone()]));
+            .or_insert_with(|| {
+                let mut ids = HashSet::new();
+                ids.insert(t.id.clone());
+                (t.clone(), ids)
+            });
     }
 
     let current_keys: HashSet<String> = current.iter().map(|e| e.key().clone()).collect();
@@ -44,8 +46,10 @@ pub fn diff(
     let mut changed = Vec::new();
 
     for key in fresh_keys.difference(&current_keys) {
-        if let Some(val) = fresh_map.get(key) {
-            added.push(val.clone());
+        if let Some((t, ids)) = fresh_map.get(key) {
+            let mut ids_vec: Vec<_> = ids.iter().cloned().collect();
+            ids_vec.sort();
+            added.push((t.clone(), ids_vec));
         }
     }
 
@@ -60,10 +64,12 @@ pub fn diff(
         let status_changed = fresh_t.status != current_mt.torrent.status;
         let progress_changed = fresh_t.progress != current_mt.torrent.progress;
         let ids_changed = current_mt.rd_ids.len() != fresh_ids.len()
-            || fresh_ids.iter().any(|id| !current_mt.rd_ids.contains(id));
+            || current_mt.rd_ids.iter().any(|id| !fresh_ids.contains(id));
 
         if status_changed || progress_changed || ids_changed {
-            changed.push((fresh_t.clone(), fresh_ids.clone()));
+            let mut ids_vec: Vec<_> = fresh_ids.iter().cloned().collect();
+            ids_vec.sort();
+            changed.push((fresh_t.clone(), ids_vec));
         }
     }
 

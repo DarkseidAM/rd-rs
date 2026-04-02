@@ -296,13 +296,30 @@ impl TorrentManager {
                 return Some(mt);
             }
         };
-        let updated = Arc::new(ManagedTorrent {
-            info: Some(info),
-            ..(*mt).clone()
-        });
+        // Securely inject the loaded info without wiping out any concurrent
+        // state changes (like state=Broken from FUSE) that happened during the HTTP fetch.
+        let mut final_arc = None;
         self.torrents
-            .insert(access_key.to_string(), updated.clone());
-        Some(updated)
+            .entry(access_key.to_string())
+            .and_modify(|arc_mt| {
+                let updated = Arc::new(ManagedTorrent {
+                    info: Some(info.clone()),
+                    ..(**arc_mt).clone()
+                });
+                *arc_mt = updated.clone();
+                final_arc = Some(updated);
+            });
+
+        if final_arc.is_some() {
+            final_arc
+        } else {
+            // Torrent was removed concurrently during info fetch.
+            // Return a detached snapshot with the info.
+            Some(Arc::new(ManagedTorrent {
+                info: Some(info),
+                ..(*mt).clone()
+            }))
+        }
     }
 
     /// Priority repair queue (deduped). Repair engine drains this before periodic scans.

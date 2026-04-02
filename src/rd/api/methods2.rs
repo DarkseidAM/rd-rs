@@ -23,12 +23,16 @@ impl RealDebrid {
         }
 
         let form_body = format!("link={}", urlencoding_encode(link));
+        let url = format!(
+            "{}/rest/1.0/unrestrict/link",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .unrestrict_client
             .execute(|_| {
                 self.unrestrict_client
                     .client
-                    .post("https://api.real-debrid.com/rest/1.0/unrestrict/link")
+                    .post(&url)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .body(form_body.clone())
             })
@@ -49,7 +53,10 @@ impl RealDebrid {
     }
 
     pub async fn select_torrent_files(&self, id: &str, files: &str) -> Result<(), RdError> {
-        let url = format!("https://api.real-debrid.com/rest/1.0/torrents/selectFiles/{id}");
+        let url = format!(
+            "{}/rest/1.0/torrents/selectFiles/{id}",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let body = format!("files={files}");
         self.api_client
             .execute(|_| {
@@ -64,7 +71,10 @@ impl RealDebrid {
     }
 
     pub async fn delete_torrent(&self, id: &str) -> Result<(), RdError> {
-        let url = format!("https://api.real-debrid.com/rest/1.0/torrents/delete/{id}");
+        let url = format!(
+            "{}/rest/1.0/torrents/delete/{id}",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         self.api_client
             .execute(|_| self.api_client.client.delete(&url))
             .await?;
@@ -73,12 +83,16 @@ impl RealDebrid {
 
     pub async fn add_magnet(&self, hash: &str) -> Result<MagnetResponse, RdError> {
         let body = format!("magnet=magnet%3A%3Fxt%3Durn%3Abtih%3A{hash}");
+        let url = format!(
+            "{}/rest/1.0/torrents/addMagnet",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .api_client
             .execute(|_| {
                 self.api_client
                     .client
-                    .post("https://api.real-debrid.com/rest/1.0/torrents/addMagnet")
+                    .post(&url)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .body(body.clone())
             })
@@ -88,13 +102,13 @@ impl RealDebrid {
     }
 
     pub async fn get_active_count(&self) -> Result<ActiveTorrentCountResponse> {
+        let url = format!(
+            "{}/rest/1.0/torrents/activeCount",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .api_client
-            .execute(|_| {
-                self.api_client
-                    .client
-                    .get("https://api.real-debrid.com/rest/1.0/torrents/activeCount")
-            })
+            .execute(|_| self.api_client.client.get(&url))
             .await
             .context("get_active_count")?;
         let r: ActiveTorrentCountResponse =
@@ -103,13 +117,13 @@ impl RealDebrid {
     }
 
     pub async fn get_traffic_details(&self) -> Result<TrafficDetailsResponse> {
+        let url = format!(
+            "{}/rest/1.0/traffic/details",
+            self.config.api.base_url.trim_end_matches('/')
+        );
         let resp = self
             .api_client
-            .execute(|_| {
-                self.api_client
-                    .client
-                    .get("https://api.real-debrid.com/rest/1.0/traffic/details")
-            })
+            .execute(|_| self.api_client.client.get(&url))
             .await
             .context("get_traffic_details")?;
         let t: TrafficDetailsResponse = resp.json().await.context("get_traffic_details: decode")?;
@@ -118,8 +132,10 @@ impl RealDebrid {
 
     pub async fn get_downloads(&self, page: u32, limit: u32) -> Result<Vec<DownloadItem>> {
         let url = format!(
-            "https://api.real-debrid.com/rest/1.0/downloads?page={}&limit={}",
-            page, limit
+            "{}/rest/1.0/downloads?page={}&limit={}",
+            self.config.api.base_url.trim_end_matches('/'),
+            page,
+            limit
         );
         let resp = self
             .api_client

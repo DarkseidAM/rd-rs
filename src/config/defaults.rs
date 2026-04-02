@@ -65,6 +65,11 @@ pub(super) fn default_attr_timeout_secs() -> u64 {
 pub(super) fn default_entry_timeout_secs() -> u64 {
     600
 }
+
+pub fn default_base_url() -> String {
+    "https://api.real-debrid.com".to_string()
+}
+
 pub(super) fn default_mount_path() -> PathBuf {
     PathBuf::from("/mnt/zurg")
 }

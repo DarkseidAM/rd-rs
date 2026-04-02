@@ -71,3 +71,38 @@ fn diff_added_removed_changed() {
     assert_eq!(result.changed[0].0.id, "id3");
     assert_eq!(result.changed[0].0.progress, 100);
 }
+
+#[test]
+fn diff_multi_id_grouping() {
+    let t1_base = make_torrent("id1", "hash1", "Pack", 100, "downloaded");
+
+    let current = DashMap::new();
+    let old_rd_ids = vec!["id1".to_string(), "id2".to_string()];
+    current.insert(
+        access_key("hash1", "Pack"),
+        make_managed(&t1_base, old_rd_ids),
+    );
+
+    // Fresh list has id1, id2, and a new id3 for the same hash!
+    // And it has an updated progress/status.
+    let fresh = vec![
+        make_torrent("id1", "hash1", "Pack", 100, "downloaded"),
+        make_torrent("id2", "hash1", "Pack", 100, "downloaded"),
+        make_torrent("id3", "hash1", "Pack", 100, "downloaded"),
+    ];
+
+    let result = diff(&current, &fresh);
+
+    // Should detect 1 changed item (the pack)
+    assert_eq!(result.added.len(), 0);
+    assert_eq!(result.removed_keys.len(), 0);
+    assert_eq!(result.changed.len(), 1);
+
+    // The changed ids should contain id1, id2, and id3, length 3
+    let changed_ids = &result.changed[0].1;
+    assert_eq!(changed_ids.len(), 3);
+    assert!(changed_ids.contains(&"id1".to_string()));
+    assert!(changed_ids.contains(&"id2".to_string()));
+    assert!(changed_ids.contains(&"id3".to_string()));
+    assert_eq!(result.duplicates, 2); // 3 incoming torrents map to 1 key -> 2 duplicates
+}
