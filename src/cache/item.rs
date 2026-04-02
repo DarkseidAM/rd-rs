@@ -5,8 +5,10 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+
+use parking_lot::RwLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -158,12 +160,12 @@ impl CacheItem {
 
     /// Returns `true` if `[start, end)` is fully in the on-disk cache.
     pub fn has_range(&self, start: u64, end: u64) -> bool {
-        self.ranges.read().unwrap().has_range(start, end)
+        self.ranges.read().has_range(start, end)
     }
 
     /// Sum of lengths of all cached byte intervals (for stats / tests).
     pub fn total_cached_bytes(&self) -> u64 {
-        self.ranges.read().unwrap().total_bytes()
+        self.ranges.read().total_bytes()
     }
 
     /// Read directly from the sparse file. Caller must have already verified
@@ -200,7 +202,7 @@ impl CacheItem {
         file.write_all(data)?;
 
         let end = offset + data.len() as u64;
-        self.ranges.write().unwrap().insert(offset, end);
+        self.ranges.write().insert(offset, end);
         self.persist_dirty.store(true, Ordering::Relaxed);
         self.downloaded_bytes
             .fetch_add(data.len() as i64, Ordering::Relaxed);
@@ -221,7 +223,7 @@ impl CacheItem {
         if !force && now.saturating_sub(last) < FLUSH_DEBOUNCE.as_secs() {
             return;
         }
-        let snapshot = self.ranges.read().unwrap().clone();
+        let snapshot = self.ranges.read().clone();
         if let Err(e) = self
             .range_db
             .upsert(&self.cache_key, self.file_size, now as i64, &snapshot)

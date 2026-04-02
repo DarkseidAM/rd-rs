@@ -1439,6 +1439,7 @@ dependencies = [
  "mockito",
  "notify",
  "once_cell",
+ "parking_lot",
  "reqwest",
  "rusqlite",
  "serde",

@@ -29,7 +29,8 @@ impl RankedHosts {
 
     /// Rewrites a `.download.real-debrid.com` URL to use the fastest host instead.
     /// Retains the original path and scheme.
-    /// Returns None if it's not a real-debrid CDN URL or parsing fails.
+    /// Returns None if it's not a real-debrid CDN URL, parsing fails,
+    /// or the URL is **already** on the pinned host (no-op rewrite avoided).
     pub fn rewrite_url(&self, download_url: &str) -> Option<String> {
         let mut parsed = Url::parse(download_url).ok()?;
 
@@ -37,6 +38,13 @@ impl RankedHosts {
         if host.ends_with(".download.real-debrid.com")
             || host.ends_with(".download.real-debrid.net")
         {
+            // Skip rewrite if already on the pinned host — the fallback path
+            // in exec.rs uses the original URL when use_fallback=true, so a
+            // no-op rewrite would make the "pinned" and "fallback" requests
+            // identical, wasting a retry on the same dead host.
+            if host == self.fastest_host {
+                return None;
+            }
             // Un-pinned URL -> Pinned URL
             parsed.set_host(Some(&self.fastest_host)).ok()?;
             return Some(parsed.to_string());
