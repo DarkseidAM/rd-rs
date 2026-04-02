@@ -1,0 +1,58 @@
+{
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "extends": [
+        "config:recommended",
+        ":dependencyDashboard",
+        "security:osvVulnerabilityAlerts"
+    ],
+    "minimumReleaseAge": "3 days",
+    "internalChecksFilter": "strict",
+    "rangeStrategy": "update-lockfile",
+    "packageRules": [
+        {
+            "description": "Group all non-major Cargo updates to reduce CI churn",
+            "matchManagers": [
+                "cargo"
+            ],
+            "matchUpdateTypes": [
+                "minor",
+                "patch"
+            ],
+            "groupName": "rust-dependencies-minor",
+            "automerge": true,
+            "platformAutomerge": true
+        },
+        {
+            "description": "Group SQLite dependencies so they update together and don't break C bindings",
+            "matchPackageNames": [
+                "rusqlite",
+                "tokio-rusqlite"
+            ],
+            "groupName": "sqlite ecosystem"
+        },
+        {
+            "description": "Disable automated updates for patched fuse3 crate to protect local edits",
+            "matchPackageNames": [
+                "fuse3"
+            ],
+            "enabled": false
+        },
+        {
+            "description": "Never automerge major updates for core network/async crates",
+            "matchPackageNames": [
+                "tokio",
+                "reqwest"
+            ],
+            "matchUpdateTypes": [
+                "major"
+            ],
+            "automerge": false
+        }
+    ],
+    "lockFileMaintenance": {
+        "enabled": true,
+        "schedule": [
+            "at any time on monday"
+        ]
+    }
+}
