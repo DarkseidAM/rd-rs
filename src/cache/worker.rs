@@ -3,6 +3,7 @@ use crate::cache::link_heal;
 use crate::rd::RealDebrid;
 use crate::rd::api::UnrestrictCache;
 use anyhow::Result;
+use parking_lot::Mutex as ParkingMutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
@@ -89,7 +90,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
         return Ok(());
     }
 
-    let queue = Arc::new(std::sync::Mutex::new(missing_slices));
+    let queue = Arc::new(ParkingMutex::new(missing_slices));
     let num_workers = max_parallel_streams.max(1);
     // Shared adaptive multiplier — all workers read/write the same value so a
     // CDN stall on any one worker immediately reduces chunk sizes for all.
@@ -117,7 +118,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                 }
 
                 let chunk_opt = {
-                    let mut q = queue_clone.lock().map_err(|_| anyhow::anyhow!("queue mutex poisoned"))?;
+                    let mut q = queue_clone.lock();
                     if let Some((slice_start, slice_end)) = q.pop_front() {
                         let multiplier = mult.load(Ordering::Relaxed);
                         let chunk_size = (base_chunk * multiplier).min(slice_end - slice_start);
@@ -209,7 +210,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                     let chunk_size = chunk_end - chunk_start;
                                     if chunk_size > base_chunk {
                                         let new_chunk_end = chunk_start + base_chunk;
-                                        queue_clone.lock().map_err(|_| anyhow::anyhow!("queue mutex poisoned"))?.push_front((new_chunk_end, chunk_end));
+                                        queue_clone.lock().push_front((new_chunk_end, chunk_end));
                                         chunk_end = new_chunk_end;
                                     }
                                     continue;
@@ -236,7 +237,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                             let chunk_size = chunk_end - chunk_start;
                             if chunk_size > base_chunk {
                                 let new_chunk_end = chunk_start + base_chunk;
-                                queue_clone.lock().map_err(|_| anyhow::anyhow!("queue mutex poisoned"))?.push_front((new_chunk_end, chunk_end));
+                                queue_clone.lock().push_front((new_chunk_end, chunk_end));
                                 chunk_end = new_chunk_end;
                             }
                             continue;
@@ -313,7 +314,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                             let chunk_size = chunk_end - chunk_start;
                             if chunk_size > base_chunk {
                                 let new_chunk_end = chunk_start + base_chunk;
-                                queue_clone.lock().map_err(|_| anyhow::anyhow!("queue mutex poisoned"))?.push_front((new_chunk_end, chunk_end));
+                                queue_clone.lock().push_front((new_chunk_end, chunk_end));
                                 chunk_end = new_chunk_end;
                             }
                             time::sleep(Duration::from_secs(retries as u64 * 2)).await;
