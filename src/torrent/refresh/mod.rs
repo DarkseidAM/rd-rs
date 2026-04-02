@@ -59,7 +59,8 @@ pub async fn run_refresh_loop(mgr: Arc<TorrentManager>) {
 
         match get_current_state(&mgr).await {
             Ok(current_state) => {
-                if Some(&current_state) == last_state.as_ref() {
+                let is_downloading = current_state.active_count > 0;
+                if !is_downloading && Some(&current_state) == last_state.as_ref() {
                     tracing::debug!("Refresh skipped: LibraryState unchanged");
                     continue;
                 }

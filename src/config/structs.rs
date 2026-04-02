@@ -94,6 +94,9 @@ impl Default for RepairConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiConfig {
+    #[serde(default = "defaults::default_base_url")]
+    pub base_url: String,
+
     #[serde(default = "defaults::default_rate_limit")]
     pub rate_limit_per_minute: u32,
 
@@ -122,6 +125,7 @@ pub struct ApiConfig {
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
+            base_url: "https://api.real-debrid.com".to_string(),
             rate_limit_per_minute: 250,
             torrents_rate_limit_per_minute: 75,
             fetch_torrents_page_size: 5000,

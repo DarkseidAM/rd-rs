@@ -15,7 +15,7 @@ impl RealDebrid {
             .execute(|_| {
                 self.api_client
                     .client
-                    .get("https://api.real-debrid.com/rest/1.0/user")
+                    .get(format!("{}/rest/1.0/user", self.config.api.base_url))
             })
             .await
             .context("get_user")?;
@@ -29,7 +29,8 @@ impl RealDebrid {
             .unwrap_or_default()
             .as_secs();
         let url = format!(
-            "https://api.real-debrid.com/rest/1.0/torrents?_t={ts}&page={page}&limit={limit}"
+            "{}/rest/1.0/torrents?_t={ts}&page={page}&limit={limit}",
+            self.config.api.base_url
         );
 
         self.torrents_rate_limiter.wait().await;
@@ -110,7 +111,7 @@ impl RealDebrid {
     }
 
     pub async fn get_torrent_info(&self, id: &str) -> Result<TorrentInfo, RdError> {
-        let url = format!("https://api.real-debrid.com/rest/1.0/torrents/info/{id}");
+        let url = format!("{}/rest/1.0/torrents/info/{id}", self.config.api.base_url);
         let resp = self
             .api_client
             .execute(|_| self.api_client.client.get(&url))
