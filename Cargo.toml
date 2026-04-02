@@ -38,7 +38,7 @@ parking_lot = "0.12"
 
 # Storage
 # Pinned to 0.37 to match tokio-rusqlite 0.7's dep (avoids libsqlite3-sys version conflict)
-rusqlite = "0.37"
+rusqlite = { version = "0.37", features = ["bundled"] }
 tokio-rusqlite = "0.7"
 
 # Logging
