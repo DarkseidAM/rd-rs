@@ -5,6 +5,9 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use super::detect::{duplicate_selected_file_ids, has_non_playable_selected, path_looks_playable};
+use super::ephemeral_torrent::{
+    EXPECT_DISMISS_HAS_ID, EXPECT_EPHEMERAL_ID, EphemeralRdTorrent, info_ready,
+};
 use super::reasons;
 use super::{CascadeOutcome, UnrepairableReason};
 use crate::config::RepairConfig;
@@ -33,16 +36,6 @@ fn map_rd(e: RdError) -> CascadeOutcome {
     }
 }
 
-async fn info_ready(rd: &RealDebrid, id: &str, restrict_cached: bool) -> Result<bool, RdError> {
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let info = rd.get_torrent_info(id).await?;
-    if restrict_cached && info.progress < 100 {
-        let _ = rd.delete_torrent(id).await;
-        return Ok(false);
-    }
-    Ok(info.progress == 100 && !info.links.is_empty())
-}
-
 /// Delete known `rd_ids`, add magnet, select files, wait for RD.  
 /// `None` = Strategy 1 incomplete (caller may try Strategy 2+).  
 /// `Some` = terminal outcome (success, unrepairable, defer, …).
@@ -68,33 +61,34 @@ async fn try_strategy_1_reinsert(
         }
     };
 
+    let mut guard = EphemeralRdTorrent::new(Arc::clone(rd), magnet_resp.id.clone());
+
     if let Err(e) = rd
-        .select_torrent_files(&magnet_resp.id, files_to_select)
+        .select_torrent_files(guard.id().expect(EXPECT_EPHEMERAL_ID), files_to_select)
         .await
     {
         error!("select_torrent_files during repair: {e}");
-        let _ = rd.delete_torrent(&magnet_resp.id).await;
         return Some(map_rd(e));
     }
 
-    match info_ready(rd, &magnet_resp.id, restrict_cached).await {
-        Ok(true) => {
+    match info_ready(rd, guard.id().expect(EXPECT_EPHEMERAL_ID), restrict_cached).await {
+        Ok(out) if out.is_ready => {
             info!("Strategy 1 succeeded for {}", torrent.access_key);
+            let id = guard.dismiss().expect(EXPECT_DISMISS_HAS_ID);
             Some(CascadeOutcome::Success {
-                new_rd_ids: Some(vec![magnet_resp.id.clone()]),
+                new_rd_ids: Some(vec![id]),
             })
         }
-        Ok(false) if restrict_cached => {
+        Ok(out) if out.restrict_cached_not_ready => {
+            match guard.delete_ephemeral().await {
+                Ok(()) => {}
+                Err(e) if e.is_bandwidth_limited() => return Some(CascadeOutcome::DeferBandwidth),
+                Err(e) => return Some(map_rd(e)),
+            }
             Some(CascadeOutcome::Unrepairable(UnrepairableReason::NotCached))
         }
-        Err(e) => {
-            let _ = rd.delete_torrent(&magnet_resp.id).await;
-            Some(map_rd(e))
-        }
-        _ => {
-            let _ = rd.delete_torrent(&magnet_resp.id).await;
-            None
-        }
+        Err(e) => Some(map_rd(e)),
+        Ok(_) => None,
     }
 }
 
@@ -105,6 +99,7 @@ pub async fn execute_cascade(
     repair_cfg: &RepairConfig,
 ) -> CascadeOutcome {
     let restrict_cached = repair_cfg.restrict_to_cached;
+    let batch_size = repair_cfg.batch_file_group_size.clamp(1, 32) as usize;
 
     let Some(info) = torrent.info.as_ref() else {
         if torrent.torrent.hash.is_empty() {
@@ -167,36 +162,43 @@ pub async fn execute_cascade(
         let file_id_str = file.id.to_string();
         match rd.add_magnet(&torrent.torrent.hash).await {
             Ok(m) => {
-                if let Err(e) = rd.select_torrent_files(&m.id, &file_id_str).await {
+                let mut guard = EphemeralRdTorrent::new(Arc::clone(rd), m.id.clone());
+                if let Err(e) = rd
+                    .select_torrent_files(guard.id().expect(EXPECT_EPHEMERAL_ID), &file_id_str)
+                    .await
+                {
                     error!("individual select: {e}");
-                    let _ = rd.delete_torrent(&m.id).await;
                     if e.is_bandwidth_limited() {
                         return CascadeOutcome::DeferBandwidth;
                     }
                     all_fixed = false;
                     continue;
                 }
-                match info_ready(rd, &m.id, restrict_cached).await {
-                    Ok(true) => {
+                match info_ready(rd, guard.id().expect(EXPECT_EPHEMERAL_ID), restrict_cached).await
+                {
+                    Ok(out) if out.is_ready => {
                         info!("Strategy 2: file {} looks cached", file.path);
                     }
-                    Ok(false) if restrict_cached => {
-                        let _ = rd.delete_torrent(&m.id).await;
+                    Ok(out) if out.restrict_cached_not_ready => {
+                        match guard.delete_ephemeral().await {
+                            Ok(()) => {}
+                            Err(e) if e.is_bandwidth_limited() => {
+                                return CascadeOutcome::DeferBandwidth;
+                            }
+                            Err(e) => return map_rd(e),
+                        }
                         return CascadeOutcome::Unrepairable(UnrepairableReason::NotCached);
                     }
                     Err(e) => {
-                        let _ = rd.delete_torrent(&m.id).await;
                         if e.is_bandwidth_limited() {
                             return CascadeOutcome::DeferBandwidth;
                         }
                         all_fixed = false;
                     }
-                    _ => {
-                        let _ = rd.delete_torrent(&m.id).await;
+                    Ok(_) => {
                         all_fixed = false;
                     }
                 }
-                let _ = rd.delete_torrent(&m.id).await;
             }
             Err(e) => {
                 if e.is_bandwidth_limited() {
@@ -217,33 +219,42 @@ pub async fn execute_cascade(
         info!("Strategy 3: ArchiveAll for {}", torrent.access_key);
         match rd.add_magnet(&torrent.torrent.hash).await {
             Ok(m) => {
-                if let Err(e) = rd.select_torrent_files(&m.id, "all").await {
+                let mut guard = EphemeralRdTorrent::new(Arc::clone(rd), m.id.clone());
+                if let Err(e) = rd
+                    .select_torrent_files(guard.id().expect(EXPECT_EPHEMERAL_ID), "all")
+                    .await
+                {
                     error!("archive select: {e}");
-                    let _ = rd.delete_torrent(&m.id).await;
                     if e.is_bandwidth_limited() {
                         return CascadeOutcome::DeferBandwidth;
                     }
                 } else {
-                    match info_ready(rd, &m.id, restrict_cached).await {
-                        Ok(true) => {
+                    match info_ready(rd, guard.id().expect(EXPECT_EPHEMERAL_ID), restrict_cached)
+                        .await
+                    {
+                        Ok(out) if out.is_ready => {
                             info!("Strategy 3 succeeded for {}", torrent.access_key);
+                            let id = guard.dismiss().expect(EXPECT_DISMISS_HAS_ID);
                             return CascadeOutcome::Success {
-                                new_rd_ids: Some(vec![m.id.clone()]),
+                                new_rd_ids: Some(vec![id]),
                             };
                         }
-                        Ok(false) if restrict_cached => {
-                            let _ = rd.delete_torrent(&m.id).await;
+                        Ok(out) if out.restrict_cached_not_ready => {
+                            match guard.delete_ephemeral().await {
+                                Ok(()) => {}
+                                Err(e) if e.is_bandwidth_limited() => {
+                                    return CascadeOutcome::DeferBandwidth;
+                                }
+                                Err(e) => return map_rd(e),
+                            }
                             return CascadeOutcome::Unrepairable(UnrepairableReason::NotCached);
                         }
                         Err(e) => {
-                            let _ = rd.delete_torrent(&m.id).await;
                             if e.is_bandwidth_limited() {
                                 return CascadeOutcome::DeferBandwidth;
                             }
                         }
-                        _ => {
-                            let _ = rd.delete_torrent(&m.id).await;
-                        }
+                        Ok(_) => {}
                     }
                 }
             }
@@ -264,38 +275,47 @@ pub async fn execute_cascade(
     let all_selected: Vec<_> = selected.iter().map(|f| f.id).collect();
     if all_selected.len() > 1 {
         info!("Strategy 4: BatchDownload for {}", torrent.access_key);
-        let chunks: Vec<_> = all_selected.chunks(5).collect();
+        let chunks: Vec<_> = all_selected.chunks(batch_size).collect();
         let n_chunks = chunks.len();
         let mut batches_ok = 0usize;
 
         for chunk in chunks {
             match rd.add_magnet(&torrent.torrent.hash).await {
                 Ok(m) => {
+                    let mut guard = EphemeralRdTorrent::new(Arc::clone(rd), m.id.clone());
                     let chunk_str = chunk
                         .iter()
                         .map(|id| id.to_string())
                         .collect::<Vec<_>>()
                         .join(",");
-                    if let Err(e) = rd.select_torrent_files(&m.id, &chunk_str).await {
-                        let _ = rd.delete_torrent(&m.id).await;
+                    if let Err(e) = rd
+                        .select_torrent_files(guard.id().expect(EXPECT_EPHEMERAL_ID), &chunk_str)
+                        .await
+                    {
                         if e.is_bandwidth_limited() {
                             return CascadeOutcome::DeferBandwidth;
                         }
                         continue;
                     }
-                    match info_ready(rd, &m.id, restrict_cached).await {
-                        Ok(true) => batches_ok += 1,
-                        Ok(false) if restrict_cached => {
-                            let _ = rd.delete_torrent(&m.id).await;
+                    match info_ready(rd, guard.id().expect(EXPECT_EPHEMERAL_ID), restrict_cached)
+                        .await
+                    {
+                        Ok(out) if out.is_ready => batches_ok += 1,
+                        Ok(out) if out.restrict_cached_not_ready => {
+                            match guard.delete_ephemeral().await {
+                                Ok(()) => {}
+                                Err(e) if e.is_bandwidth_limited() => {
+                                    return CascadeOutcome::DeferBandwidth;
+                                }
+                                Err(e) => return map_rd(e),
+                            }
                             return CascadeOutcome::Unrepairable(UnrepairableReason::NotCached);
                         }
                         Err(e) if e.is_bandwidth_limited() => {
-                            let _ = rd.delete_torrent(&m.id).await;
                             return CascadeOutcome::DeferBandwidth;
                         }
                         _ => {}
                     }
-                    let _ = rd.delete_torrent(&m.id).await;
                 }
                 Err(e) => {
                     if e.is_bandwidth_limited() {

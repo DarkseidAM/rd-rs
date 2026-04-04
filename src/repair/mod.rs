@@ -1,6 +1,7 @@
 pub mod capacity;
 pub mod detect;
 pub mod engine;
+pub(crate) mod ephemeral_torrent;
 pub mod preflight;
 pub mod reasons;
 pub mod strategies;

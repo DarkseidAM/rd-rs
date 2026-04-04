@@ -101,6 +101,7 @@ async fn execute_hook(command_template: &str, paths: Vec<String>) {
     // Mirror zurg: if no %s is provided, we just run the command once.
     // If %s is provided, we run the command once PER path.
     if !command_template.contains("%s") {
+        // TODO: change log level to info
         tracing::debug!("Executing on_library_update: {}", command_template);
         if let Err(e) = launch_shell(command_template).await {
             tracing::warn!("on_library_update failed: {}", e);
