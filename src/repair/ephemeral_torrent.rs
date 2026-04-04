@@ -4,6 +4,11 @@
 //! runtime is still alive). Call [`EphemeralRdTorrent::dismiss`] when the torrent becomes
 //! the new canonical row (Strategy 1 / 3 success) or was already removed (e.g. inside
 //! [`info_ready`] for `restrict_to_cached`).
+//!
+//! # `id` / `dismiss` contract
+//! After [`EphemeralRdTorrent::new`], [`EphemeralRdTorrent::id`] is [`Some`] until
+//! [`EphemeralRdTorrent::dismiss`] runs. Do not call [`EphemeralRdTorrent::id`] after
+//! `dismiss` on the same guard; use the [`String`] returned from `dismiss` if you need the id.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,6 +17,15 @@ use tracing::warn;
 
 use crate::rd::RealDebrid;
 use crate::rd::client::RdError;
+
+/// Message for [`Option::expect`] on [`EphemeralRdTorrent::id`] when the cascade guarantees the
+/// id exists (i.e. [`EphemeralRdTorrent::dismiss`] has not been called on this guard).
+pub(crate) const EXPECT_EPHEMERAL_ID: &str =
+    "ephemeral RD torrent id missing: do not call id() after dismiss()";
+
+/// Message for [`Option::expect`] on [`EphemeralRdTorrent::dismiss`] when the success path must
+/// consume the id exactly once.
+pub(crate) const EXPECT_DISMISS_HAS_ID: &str = "id already taken";
 
 /// Result of [`info_ready`]: whether RD reports the torrent link-ready, and whether this
 /// helper already called `delete_torrent` (caller must [`EphemeralRdTorrent::dismiss`]).
@@ -70,6 +84,8 @@ pub(crate) async fn info_ready(
 
 /// Deletes the RD torrent id on drop unless [`Self::dismiss`] was called.
 /// If there is no current Tokio runtime, cleanup is skipped (avoids `tokio::spawn` panicking).
+///
+/// **Invariant:** [`Self::id`] is only valid until the first [`Self::dismiss`] (see module docs).
 pub(crate) struct EphemeralRdTorrent {
     rd: Arc<RealDebrid>,
     id: Option<String>,
@@ -85,8 +101,9 @@ impl EphemeralRdTorrent {
         self.id.take()
     }
 
-    pub(crate) fn id(&self) -> &str {
-        self.id.as_deref().expect("ephemeral id after dismiss")
+    /// Real-Debrid torrent id while this guard still owns it. [`None`] after [`Self::dismiss`].
+    pub(crate) fn id(&self) -> Option<&str> {
+        self.id.as_deref()
     }
 }
 
