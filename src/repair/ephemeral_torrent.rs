@@ -8,6 +8,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tracing::warn;
+
 use crate::rd::RealDebrid;
 use crate::rd::client::RdError;
 
@@ -68,6 +70,7 @@ pub(crate) async fn info_ready(
 }
 
 /// Deletes the RD torrent id on drop unless [`Self::dismiss`] was called.
+/// If there is no current Tokio runtime, cleanup is skipped (avoids `tokio::spawn` panicking).
 pub(crate) struct EphemeralRdTorrent {
     rd: Arc<RealDebrid>,
     id: Option<String>,
@@ -91,9 +94,19 @@ impl Drop for EphemeralRdTorrent {
     fn drop(&mut self) {
         if let Some(id) = self.id.take() {
             let rd = self.rd.clone();
-            tokio::spawn(async move {
-                let _ = rd.delete_torrent(&id).await;
-            });
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(async move {
+                        let _ = rd.delete_torrent(&id).await;
+                    });
+                }
+                Err(_) => {
+                    warn!(
+                        rd_id = %id,
+                        "EphemeralRdTorrent drop: no Tokio runtime; skipped delete_torrent cleanup"
+                    );
+                }
+            }
         }
     }
 }
