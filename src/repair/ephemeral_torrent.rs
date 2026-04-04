@@ -1,9 +1,15 @@
 //! Ephemeral Real-Debrid torrents created during repair (per-strategy magnets).
 //!
 //! [`EphemeralRdTorrent`] deletes its id on drop via a spawned task (best-effort if the
-//! runtime is still alive). Call [`EphemeralRdTorrent::dismiss`] when the torrent becomes
-//! the new canonical row (Strategy 1 / 3 success) or was already removed (e.g. inside
-//! [`info_ready`] for `restrict_to_cached`).
+//! runtime is still alive). Call [`EphemeralRdTorrent::dismiss`] only when the RD torrent
+//! becomes the new canonical row (Strategy 1 / 3 success) so [`Drop`] does **not** remove it.
+//!
+//! [`info_ready`] does not call `delete_torrent`. For outcomes where the ephemeral magnet must
+//! be removed, **do not** [`EphemeralRdTorrent::dismiss`] unless the RD row is kept on purpose.
+//! Use [`EphemeralRdTorrent::delete_ephemeral`] before returning terminal outcomes so
+//! `delete_torrent` errors propagate (`?` / `map_rd`); on `Err` the id stays set so [`Drop`]
+//! can retry. Calling `dismiss()` on a failure path would skip cleanup and orphan the torrent on
+//! Real-Debrid.
 //!
 //! # `id` / `dismiss` contract
 //! After [`EphemeralRdTorrent::new`], [`EphemeralRdTorrent::id`] is [`Some`] until
@@ -27,39 +33,44 @@ pub(crate) const EXPECT_EPHEMERAL_ID: &str =
 /// consume the id exactly once.
 pub(crate) const EXPECT_DISMISS_HAS_ID: &str = "id already taken";
 
-/// Result of [`info_ready`]: whether RD reports the torrent link-ready, and whether this
-/// helper already called `delete_torrent` (caller must [`EphemeralRdTorrent::dismiss`]).
+/// Result of [`info_ready`]. Does not delete the RD torrent; [`EphemeralRdTorrent`] cleans up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InfoReadyOutcome {
     pub(crate) is_ready: bool,
-    pub(crate) deleted_by_info_ready: bool,
+    /// `restrict_to_cached` is on and polling stopped without 100% progress and links (unrepairable
+    /// as not cached). Call [`EphemeralRdTorrent::delete_ephemeral`] before returning, or rely on
+    /// [`Drop`] if deletion is not awaited there.
+    pub(crate) restrict_cached_not_ready: bool,
 }
 
 impl InfoReadyOutcome {
     fn ready() -> Self {
         Self {
             is_ready: true,
-            deleted_by_info_ready: false,
-        }
-    }
-
-    fn not_ready_deleted() -> Self {
-        Self {
-            is_ready: false,
-            deleted_by_info_ready: true,
+            restrict_cached_not_ready: false,
         }
     }
 
     fn not_ready_keep() -> Self {
         Self {
             is_ready: false,
-            deleted_by_info_ready: false,
+            restrict_cached_not_ready: false,
+        }
+    }
+
+    fn restrict_cached_exhausted() -> Self {
+        Self {
+            is_ready: false,
+            restrict_cached_not_ready: true,
         }
     }
 }
 
 /// Poll RD until the torrent is 100% with links, or give up after 3 attempts.
 /// Backoff: immediate, then 1s, then 2s before subsequent `get_torrent_info` calls.
+///
+/// With `restrict_cached`, early `progress < 100` (common right after select) does **not** end the
+/// poll; only exhaustion without reaching ready sets [`InfoReadyOutcome::restrict_cached_not_ready`].
 pub(crate) async fn info_ready(
     rd: &RealDebrid,
     id: &str,
@@ -71,15 +82,15 @@ pub(crate) async fn info_ready(
         }
 
         let info = rd.get_torrent_info(id).await?;
-        if restrict_cached && info.progress < 100 {
-            let _ = rd.delete_torrent(id).await;
-            return Ok(InfoReadyOutcome::not_ready_deleted());
-        }
         if info.progress == 100 && !info.links.is_empty() {
             return Ok(InfoReadyOutcome::ready());
         }
     }
-    Ok(InfoReadyOutcome::not_ready_keep())
+    Ok(if restrict_cached {
+        InfoReadyOutcome::restrict_cached_exhausted()
+    } else {
+        InfoReadyOutcome::not_ready_keep()
+    })
 }
 
 /// Deletes the RD torrent id on drop unless [`Self::dismiss`] was called.
@@ -105,6 +116,17 @@ impl EphemeralRdTorrent {
     pub(crate) fn id(&self) -> Option<&str> {
         self.id.as_deref()
     }
+
+    /// Deletes this ephemeral torrent on Real-Debrid and clears the id so [`Drop`] will not delete
+    /// again. On `Err`, the id is left in place for a later attempt (e.g. [`Drop`]).
+    pub(crate) async fn delete_ephemeral(&mut self) -> Result<(), RdError> {
+        let Some(id) = self.id.clone() else {
+            return Ok(());
+        };
+        self.rd.delete_torrent(&id).await?;
+        self.id = None;
+        Ok(())
+    }
 }
 
 impl Drop for EphemeralRdTorrent {
@@ -114,7 +136,21 @@ impl Drop for EphemeralRdTorrent {
             match tokio::runtime::Handle::try_current() {
                 Ok(handle) => {
                     handle.spawn(async move {
-                        let _ = rd.delete_torrent(&id).await;
+                        if let Err(e) = rd.delete_torrent(&id).await {
+                            warn!(
+                                rd_id = %id,
+                                error = %e,
+                                "EphemeralRdTorrent drop: delete_torrent failed, retrying once"
+                            );
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            if let Err(e2) = rd.delete_torrent(&id).await {
+                                warn!(
+                                    rd_id = %id,
+                                    error = %e2,
+                                    "EphemeralRdTorrent drop: delete_torrent failed after retry; orphan may remain on Real-Debrid"
+                                );
+                            }
+                        }
                     });
                 }
                 Err(_) => {

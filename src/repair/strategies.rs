@@ -79,8 +79,12 @@ async fn try_strategy_1_reinsert(
                 new_rd_ids: Some(vec![id]),
             })
         }
-        Ok(out) if out.deleted_by_info_ready => {
-            guard.dismiss();
+        Ok(out) if out.restrict_cached_not_ready => {
+            match guard.delete_ephemeral().await {
+                Ok(()) => {}
+                Err(e) if e.is_bandwidth_limited() => return Some(CascadeOutcome::DeferBandwidth),
+                Err(e) => return Some(map_rd(e)),
+            }
             Some(CascadeOutcome::Unrepairable(UnrepairableReason::NotCached))
         }
         Err(e) => Some(map_rd(e)),
@@ -175,8 +179,14 @@ pub async fn execute_cascade(
                     Ok(out) if out.is_ready => {
                         info!("Strategy 2: file {} looks cached", file.path);
                     }
-                    Ok(out) if out.deleted_by_info_ready => {
-                        guard.dismiss();
+                    Ok(out) if out.restrict_cached_not_ready => {
+                        match guard.delete_ephemeral().await {
+                            Ok(()) => {}
+                            Err(e) if e.is_bandwidth_limited() => {
+                                return CascadeOutcome::DeferBandwidth;
+                            }
+                            Err(e) => return map_rd(e),
+                        }
                         return CascadeOutcome::Unrepairable(UnrepairableReason::NotCached);
                     }
                     Err(e) => {
@@ -229,8 +239,14 @@ pub async fn execute_cascade(
                                 new_rd_ids: Some(vec![id]),
                             };
                         }
-                        Ok(out) if out.deleted_by_info_ready => {
-                            guard.dismiss();
+                        Ok(out) if out.restrict_cached_not_ready => {
+                            match guard.delete_ephemeral().await {
+                                Ok(()) => {}
+                                Err(e) if e.is_bandwidth_limited() => {
+                                    return CascadeOutcome::DeferBandwidth;
+                                }
+                                Err(e) => return map_rd(e),
+                            }
                             return CascadeOutcome::Unrepairable(UnrepairableReason::NotCached);
                         }
                         Err(e) => {
@@ -285,8 +301,14 @@ pub async fn execute_cascade(
                         .await
                     {
                         Ok(out) if out.is_ready => batches_ok += 1,
-                        Ok(out) if out.deleted_by_info_ready => {
-                            guard.dismiss();
+                        Ok(out) if out.restrict_cached_not_ready => {
+                            match guard.delete_ephemeral().await {
+                                Ok(()) => {}
+                                Err(e) if e.is_bandwidth_limited() => {
+                                    return CascadeOutcome::DeferBandwidth;
+                                }
+                                Err(e) => return map_rd(e),
+                            }
                             return CascadeOutcome::Unrepairable(UnrepairableReason::NotCached);
                         }
                         Err(e) if e.is_bandwidth_limited() => {
