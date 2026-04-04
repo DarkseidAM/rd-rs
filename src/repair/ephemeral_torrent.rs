@@ -53,8 +53,7 @@ pub(crate) async fn info_ready(
 ) -> Result<InfoReadyOutcome, RdError> {
     for attempt in 0..3 {
         if attempt > 0 {
-            let wait = if attempt == 1 { 1u64 } else { 2 };
-            tokio::time::sleep(Duration::from_secs(wait)).await;
+            tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
         }
 
         let info = rd.get_torrent_info(id).await?;
@@ -81,8 +80,9 @@ impl EphemeralRdTorrent {
         Self { rd, id: Some(id) }
     }
 
-    pub(crate) fn dismiss(&mut self) {
-        self.id = None;
+    /// Clears the ephemeral id so [`Drop`] will not delete it. Returns the id if it was present.
+    pub(crate) fn dismiss(&mut self) -> Option<String> {
+        self.id.take()
     }
 
     pub(crate) fn id(&self) -> &str {

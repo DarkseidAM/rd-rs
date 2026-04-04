@@ -69,8 +69,7 @@ async fn try_strategy_1_reinsert(
     match info_ready(rd, guard.id(), restrict_cached).await {
         Ok(out) if out.is_ready => {
             info!("Strategy 1 succeeded for {}", torrent.access_key);
-            let id = guard.id().to_string();
-            guard.dismiss();
+            let id = guard.dismiss().expect("id already taken");
             Some(CascadeOutcome::Success {
                 new_rd_ids: Some(vec![id]),
             })
@@ -211,8 +210,7 @@ pub async fn execute_cascade(
                     match info_ready(rd, guard.id(), restrict_cached).await {
                         Ok(out) if out.is_ready => {
                             info!("Strategy 3 succeeded for {}", torrent.access_key);
-                            let id = guard.id().to_string();
-                            guard.dismiss();
+                            let id = guard.dismiss().expect("id already taken");
                             return CascadeOutcome::Success {
                                 new_rd_ids: Some(vec![id]),
                             };
