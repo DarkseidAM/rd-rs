@@ -120,10 +120,10 @@ impl EphemeralRdTorrent {
     /// Deletes this ephemeral torrent on Real-Debrid and clears the id so [`Drop`] will not delete
     /// again. On `Err`, the id is left in place for a later attempt (e.g. [`Drop`]).
     pub(crate) async fn delete_ephemeral(&mut self) -> Result<(), RdError> {
-        let Some(id) = self.id.clone() else {
+        let Some(id) = self.id.as_deref() else {
             return Ok(());
         };
-        self.rd.delete_torrent(&id).await?;
+        self.rd.delete_torrent(id).await?;
         self.id = None;
         Ok(())
     }
