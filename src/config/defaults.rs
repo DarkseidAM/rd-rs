@@ -20,6 +20,9 @@ pub(super) fn default_head_unreachable_threshold() -> usize {
 pub(super) fn default_head_check_min_interval_mins() -> u64 {
     30
 }
+pub(super) fn default_repair_batch_file_group_size() -> u32 {
+    5
+}
 pub(super) fn default_rate_limit() -> u32 {
     250
 }

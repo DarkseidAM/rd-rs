@@ -74,6 +74,10 @@ pub struct RepairConfig {
     /// Minimum wall time between passive HEAD runs for the same torrent.
     #[serde(default = "defaults::default_head_check_min_interval_mins")]
     pub head_check_min_interval_mins: u64,
+
+    /// Max number of file IDs per Strategy 4 `select_torrent_files` batch (clamped 1–32).
+    #[serde(default = "defaults::default_repair_batch_file_group_size")]
+    pub batch_file_group_size: u32,
 }
 
 impl Default for RepairConfig {
@@ -88,6 +92,7 @@ impl Default for RepairConfig {
             head_check_enabled: true,
             head_unreachable_threshold: 1,
             head_check_min_interval_mins: 30,
+            batch_file_group_size: 5,
         }
     }
 }
