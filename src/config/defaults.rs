@@ -38,6 +38,9 @@ pub(super) fn default_timeout_secs() -> u64 {
 pub(super) fn default_download_read_timeout_secs() -> u64 {
     300
 }
+pub(super) fn default_bandwidth_reset_timezone() -> String {
+    "Europe/Paris".to_string()
+}
 pub(super) fn default_retries() -> u32 {
     2
 }

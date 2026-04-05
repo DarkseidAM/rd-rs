@@ -40,6 +40,14 @@ impl ApiError {
                 | Self::FairUsageLimit { .. }
         )
     }
+
+    /// Daily quota / fair-usage style errors where retrying the same token is pointless.
+    pub fn is_bandwidth_limited(&self) -> bool {
+        matches!(
+            self,
+            Self::TrafficExhausted { .. } | Self::FairUsageLimit { .. }
+        )
+    }
 }
 
 #[derive(Debug, Error, Clone)]
@@ -115,10 +123,10 @@ impl RdError {
 
     /// True when repair should pause for this torrent and retry a later cycle (no unrepairable mark).
     pub fn is_bandwidth_limited(&self) -> bool {
-        matches!(
-            self,
-            Self::Api(ApiError::TrafficExhausted { .. } | ApiError::FairUsageLimit { .. })
-                | Self::Download(DownloadError::BytesLimitReached)
-        )
+        match self {
+            Self::Api(e) => e.is_bandwidth_limited(),
+            Self::Download(DownloadError::BytesLimitReached) => true,
+            _ => false,
+        }
     }
 }

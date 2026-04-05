@@ -86,6 +86,21 @@ fn concurrent_rotation_is_safe() {
 }
 
 #[test]
+fn download_bearer_skips_exhausted_slots() {
+    let pool = TokenPool::new(vec!["token_a".to_string(), "token_b".to_string()]);
+    pool.mark_exhausted("token_a");
+    assert_eq!(pool.download_bearer().as_str(), "token_b");
+}
+
+#[test]
+fn clear_all_exhausted_restores_eligible_primary() {
+    let pool = TokenPool::new(vec!["token_a".to_string(), "token_b".to_string()]);
+    pool.mark_exhausted("token_a");
+    pool.clear_all_exhausted();
+    assert_eq!(pool.download_bearer().as_str(), "token_a");
+}
+
+#[test]
 fn update_tokens_replaces_pool() {
     let pool = TokenPool::new(vec!["old_token".to_string()]);
     assert_eq!(pool.current().as_str(), "old_token");

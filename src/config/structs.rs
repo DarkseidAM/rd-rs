@@ -133,6 +133,10 @@ pub struct ApiConfig {
     /// Max time for a single CDN Range GET (including reading the response body for that chunk). Separate from `timeout_secs` used for API calls.
     #[serde(default = "defaults::default_download_read_timeout_secs")]
     pub download_read_timeout_secs: u64,
+
+    /// IANA timezone for scheduling daily clear of per-token bandwidth exhaustion flags (aligns with RD daily window, e.g. CET).
+    #[serde(default = "defaults::default_bandwidth_reset_timezone")]
+    pub bandwidth_reset_timezone: String,
 }
 
 impl Default for ApiConfig {
@@ -149,6 +153,7 @@ impl Default for ApiConfig {
             retain_non_rd_downloads: false,
             cdn_reprobe_interval_mins: 0,
             download_read_timeout_secs: 300,
+            bandwidth_reset_timezone: defaults::default_bandwidth_reset_timezone(),
         }
     }
 }
