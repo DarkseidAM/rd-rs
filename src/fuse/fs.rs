@@ -36,7 +36,7 @@ use crate::config::Config;
 use crate::fuse::consts::{INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE};
 use crate::fuse::vfs_read_buffer::VfsReadBuffer;
 use crate::rd::RealDebrid;
-use crate::rd::api::{UnrestrictCache, new_unrestrict_cache};
+use crate::rd::api::UnrestrictCache;
 use crate::torrent::{ManagedTorrent, TorrentManager};
 use arc_swap::ArcSwap;
 
@@ -75,6 +75,7 @@ impl RdFs {
         cache: Arc<Cache>,
     ) -> Self {
         let torrents = torrent_manager.torrents.clone();
+        let unrestrict_cache = torrent_manager.unrestrict_cache.clone();
         let vfs = config.load().vfs.clone();
         Self {
             torrents,
@@ -82,7 +83,7 @@ impl RdFs {
             rd,
             config,
             cache,
-            unrestrict_cache: new_unrestrict_cache(),
+            unrestrict_cache,
             key_to_inode: DashMap::new(),
             inode_to_key: DashMap::new(),
             next_torrent_inode: AtomicU64::new(INODE_TORRENT_BASE),

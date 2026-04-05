@@ -5,6 +5,7 @@ use chrono::Utc;
 use rd_rs::config::Config;
 use rd_rs::db::{Db, TorrentState};
 use rd_rs::rd::RealDebrid;
+use rd_rs::rd::api::new_unrestrict_cache;
 use rd_rs::rd::types::Torrent;
 use rd_rs::torrent::{EnqueueRepairAllOptions, ManagedTorrent, TorrentManager};
 use std::sync::Arc;
@@ -29,6 +30,7 @@ async fn one_torrent_tm() -> (TorrentManager, String) {
         rd,
         Arc::new(db.conn.clone()),
         Arc::new(ArcSwap::from_pointee(cfg)),
+        new_unrestrict_cache(),
     )
     .await
     .unwrap();

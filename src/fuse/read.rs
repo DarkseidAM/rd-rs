@@ -12,7 +12,7 @@ use bytes::Bytes;
 
 use crate::cache::CacheReadError;
 use crate::config::parse_byte_size;
-use crate::rd::api::UnrestrictCache;
+use crate::rd::api::{UnrestrictCache, clear_unrestrict_cache};
 
 use super::consts::INODE_FILE_BASE;
 use super::fs::RdFs;
@@ -191,7 +191,11 @@ pub async fn read(
 
                 if is_fatal {
                     tracing::error!(link = %torrent_link, "fatal unrestrict error, queuing repair");
-                    crate::rd::RealDebrid::clear_unrestrict_cache(unrestrict_cache, &torrent_link);
+                    clear_unrestrict_cache(
+                        unrestrict_cache,
+                        fs.rd.credentials.load().token.as_str(),
+                        &torrent_link,
+                    );
                     let tm = fs.torrent_manager.clone();
                     let ak = access_key.clone();
                     let file_path = file.path.clone();
@@ -241,7 +245,7 @@ pub async fn read(
                 expected = file_size,
                 "corrupted link detected — clearing unrestrict cache and VFS disk cache, queuing repair"
             );
-            crate::rd::RealDebrid::clear_unrestrict_cache(unrestrict_cache, &torrent_link);
+            clear_unrestrict_cache(unrestrict_cache, &download.token, &torrent_link);
             fs.cache.invalidate(&access_key, &sanitized);
 
             let tm = fs.torrent_manager.clone();
@@ -301,7 +305,7 @@ pub async fn read(
                 return Err(Errno::from(libc::EINTR));
             }
             Err(CacheReadError::DownloadFailed) => {
-                crate::rd::RealDebrid::clear_unrestrict_cache(unrestrict_cache, &torrent_link);
+                clear_unrestrict_cache(unrestrict_cache, &download.token, &torrent_link);
                 tracing::warn!(attempt, inode, offset, "download failed — retrying");
                 continue;
             }

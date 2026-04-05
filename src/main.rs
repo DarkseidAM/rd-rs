@@ -9,6 +9,7 @@ use fuse3::raw::Session;
 use rd_rs::config::Config;
 use rd_rs::db::Db;
 use rd_rs::fuse::RdFs;
+use rd_rs::rd::api::{clear_unrestrict_cache_all, new_unrestrict_cache};
 use rd_rs::torrent::{EnqueueRepairAllOptions, TorrentManager};
 
 struct LocalTimer;
@@ -88,8 +89,15 @@ async fn run_repair_cli(args: RepairCli) -> Result<()> {
     }
     let rd_client = Arc::new(rd_client);
     let db = Arc::new(db.conn);
+    let unrestrict_cache = new_unrestrict_cache();
 
-    let torrent_mgr = TorrentManager::new(rd_client.clone(), db.clone(), config.clone()).await?;
+    let torrent_mgr = TorrentManager::new(
+        rd_client.clone(),
+        db.clone(),
+        config.clone(),
+        unrestrict_cache,
+    )
+    .await?;
     let torrent_mgr = Arc::new(torrent_mgr);
 
     torrent_mgr
@@ -129,6 +137,8 @@ async fn run_fuse_mount() -> Result<()> {
         rd_client.ranked_hosts.store(Some(pin));
     }
     let rd_client = Arc::new(rd_client);
+    let unrestrict_cache = new_unrestrict_cache();
+    let unrestrict_cache_watch = unrestrict_cache.clone();
 
     let _config_watcher = match Config::watch("config.toml") {
         Ok((mut rx, watcher)) => {
@@ -143,6 +153,7 @@ async fn run_fuse_mount() -> Result<()> {
                     // most recent config and marks it as seen.
                     let updated = rx.borrow_and_update().clone();
                     rd_clone.reload_credentials(&updated);
+                    clear_unrestrict_cache_all(&unrestrict_cache_watch);
                     config_clone.store(Arc::new(updated));
                 }
             });
@@ -158,7 +169,13 @@ async fn run_fuse_mount() -> Result<()> {
     let db = Arc::new(db.conn);
 
     tracing::info!("Starting TorrentManager...");
-    let torrent_mgr = TorrentManager::new(rd_client.clone(), db.clone(), config.clone()).await?;
+    let torrent_mgr = TorrentManager::new(
+        rd_client.clone(),
+        db.clone(),
+        config.clone(),
+        unrestrict_cache,
+    )
+    .await?;
     let torrent_mgr = Arc::new(torrent_mgr);
     torrent_mgr.start();
 

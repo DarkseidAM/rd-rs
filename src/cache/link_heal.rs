@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::rd::RealDebrid;
-use crate::rd::api::UnrestrictCache;
+use crate::rd::api::{UnrestrictCache, clear_unrestrict_cache};
 use crate::rd::client::RdError;
 
 /// Max automatic unrestrict refreshes per downloader session (shared across chunk workers).
@@ -57,7 +57,7 @@ async fn refresh_cdn_url(
     source_link: &str,
     live_url: &RwLock<String>,
 ) -> Result<(), RdError> {
-    RealDebrid::clear_unrestrict_cache(cache, source_link);
+    clear_unrestrict_cache(cache, rd.credentials.load().token.as_str(), source_link);
     let download = rd.unrestrict_link(cache, source_link).await?;
     *live_url.write().await = download.download;
     Ok(())
