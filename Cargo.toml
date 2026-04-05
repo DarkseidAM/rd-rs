@@ -38,7 +38,7 @@ parking_lot = "0.12"
 
 # Storage
 # Pinned to 0.37 to match tokio-rusqlite 0.7's dep (avoids libsqlite3-sys version conflict)
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 tokio-rusqlite = "0.7"
 
 # Logging
@@ -65,7 +65,7 @@ tokio = { version = "1", features = ["rt", "macros"] }
 tokio-util = "0.7"
 tempfile = "3"
 mockito = "1.7"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 
 [patch.crates-io]
 fuse3 = { path = "vendor/fuse3" }
