@@ -12,7 +12,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "rd-rs"
 path = "src/main.rs"
-    
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
