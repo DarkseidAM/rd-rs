@@ -10,6 +10,7 @@ fn parse_minimal_toml() {
     assert_eq!(cfg.api.rate_limit_per_minute, 250);
     assert_eq!(cfg.api.refresh_interval_secs, 15);
     assert_eq!(cfg.api.cdn_reprobe_interval_mins, 0);
+    assert_eq!(cfg.api.download_read_timeout_secs, 300);
     assert_eq!(cfg.repair.every_mins, 60);
     assert_eq!(cfg.vfs.chunk_size, "4M");
 }

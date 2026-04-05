@@ -1,6 +1,7 @@
 //! RealDebrid API methods: unrestrict, select files, delete, add magnet, downloads, verify.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -161,6 +162,7 @@ impl RealDebrid {
             .acquire()
             .await
             .context("verify_head: connection semaphore closed")?;
+        let api_to = Duration::from_secs(self.config.api.timeout_secs.max(1));
         let resp = self
             .download_client
             .execute(|use_fallback| {
@@ -168,6 +170,7 @@ impl RealDebrid {
                 self.download_client
                     .client
                     .head(active_url.as_deref().unwrap_or(url))
+                    .timeout(api_to)
             })
             .await
             .context("verify_head")?;
@@ -185,6 +188,7 @@ impl RealDebrid {
             .acquire()
             .await
             .context("verify_range: connection semaphore closed")?;
+        let api_to = Duration::from_secs(self.config.api.timeout_secs.max(1));
         let resp = self
             .download_client
             .execute(|use_fallback| {
@@ -193,6 +197,7 @@ impl RealDebrid {
                     .client
                     .get(active_url.as_deref().unwrap_or(url))
                     .header("Range", "bytes=0-0")
+                    .timeout(api_to)
             })
             .await
             .context("verify_range")?;

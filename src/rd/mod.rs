@@ -113,9 +113,11 @@ impl RealDebrid {
         // Disable HTTP/2: RD .com CDN servers only support HTTP/1.1.
         // `pool_max_idle_per_host` is only the idle connection cache for this Client;
         // concurrent CDN usage is capped by `connection_semaphore` (see worker + verify).
+        let download_read = Duration::from_secs(cfg.api.download_read_timeout_secs.max(1));
         let download_http = ClientBuilder::new()
             .http1_only()
             .pool_max_idle_per_host(32)
+            .timeout(download_read)
             .build()?;
 
         // Build the token pool first so we can share it with the download client config.
@@ -127,7 +129,7 @@ impl RealDebrid {
                 credentials: credentials.clone(),
                 rate_limiter: None,
                 max_retries,
-                timeout: Duration::from_secs(cfg.api.timeout_secs),
+                timeout: download_read,
                 is_download_client: true,
                 download_token_pool: Some(token_pool.clone()),
             },

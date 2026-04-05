@@ -35,6 +35,9 @@ pub(super) fn default_page_size() -> u32 {
 pub(super) fn default_timeout_secs() -> u64 {
     60
 }
+pub(super) fn default_download_read_timeout_secs() -> u64 {
+    300
+}
 pub(super) fn default_retries() -> u32 {
     2
 }
