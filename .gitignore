@@ -1,7 +1,7 @@
 /target
 zurg_rs_plan.md
 config.toml
-docs/zurg-main-review.md
+docs/*.md
 data/
 .cursor/
 .cursorignore
