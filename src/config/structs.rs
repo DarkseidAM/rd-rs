@@ -129,6 +129,10 @@ pub struct ApiConfig {
     /// If > 0, re-run CDN latency test every N minutes and update pinned host (`RankedHosts`) without restart. 0 = disabled.
     #[serde(default = "defaults::default_cdn_reprobe_interval_mins")]
     pub cdn_reprobe_interval_mins: u64,
+
+    /// Max time for a single CDN Range GET (including reading the response body for that chunk). Separate from `timeout_secs` used for API calls.
+    #[serde(default = "defaults::default_download_read_timeout_secs")]
+    pub download_read_timeout_secs: u64,
 }
 
 impl Default for ApiConfig {
@@ -144,6 +148,7 @@ impl Default for ApiConfig {
             use_range_verification: false,
             retain_non_rd_downloads: false,
             cdn_reprobe_interval_mins: 0,
+            download_read_timeout_secs: 300,
         }
     }
 }

@@ -1,5 +1,7 @@
 //! `http_range_get` — byte-range HTTP download helper for `RealDebrid`.
 
+use std::time::Duration;
+
 use reqwest::StatusCode;
 use tokio::time::sleep;
 
@@ -40,6 +42,7 @@ impl RealDebrid {
         range: &str,
     ) -> Result<reqwest::Response, RdError> {
         let max_retries = self.config.api.retries_until_failed;
+        let read_to = Duration::from_secs(self.config.api.download_read_timeout_secs.max(1));
         let mut attempt: u32 = 0;
         loop {
             let resp = self
@@ -50,6 +53,7 @@ impl RealDebrid {
                         .client
                         .get(active_url.as_deref().unwrap_or(url))
                         .header("Range", range)
+                        .timeout(read_to)
                 })
                 .await?;
 
