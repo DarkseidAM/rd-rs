@@ -8,6 +8,7 @@ pub mod bandwidth_reset;
 pub mod cdn;
 pub mod client;
 pub mod token_pool;
+pub mod traffic_snapshot;
 pub mod types;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use arc_swap::ArcSwap;
 use reqwest::ClientBuilder;
 
 use crate::config::Config;
+use crate::rd::types::TrafficDetailsSnapshot;
 use client::{Credentials, RateLimiter, RdClient, RdClientConfig};
 use token_pool::TokenPool;
 
@@ -40,6 +42,8 @@ pub struct RealDebrid {
     pub token_pool: Arc<TokenPool>,
     pub config: Arc<Config>,
     pub ranked_hosts: Arc<arc_swap::ArcSwapOption<cdn::RankedHosts>>,
+    /// Latest per-token `GET /traffic/details` snapshot when refresh is enabled in config.
+    pub traffic_details: Arc<arc_swap::ArcSwapOption<TrafficDetailsSnapshot>>,
     /// Shared, hot-swappable credentials. Updated atomically by [`reload_credentials`](Self::reload_credentials).
     pub credentials: Arc<ArcSwap<Credentials>>,
 }
@@ -148,6 +152,7 @@ impl RealDebrid {
             token_pool,
             config: Arc::new(cfg.clone()),
             ranked_hosts: Arc::new(arc_swap::ArcSwapOption::new(None)),
+            traffic_details: Arc::new(arc_swap::ArcSwapOption::new(None)),
             credentials,
         })
     }

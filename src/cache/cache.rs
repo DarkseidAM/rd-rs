@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use tokio::time;
 
 use crate::cache::item::CacheItem;
@@ -78,6 +79,10 @@ impl Cache {
         format!("{access_key}/{filename}")
     }
 
+    /// Returns the live [`CacheItem`] for `key`, creating it on first use.
+    ///
+    /// Uses `DashMap::entry` so concurrent callers share one canonical `Arc` instead of
+    /// duplicating items (Decypharr B3-style creation race).
     pub fn get_or_create(
         &self,
         access_key: &str,
@@ -86,16 +91,21 @@ impl Cache {
     ) -> anyhow::Result<Arc<CacheItem>> {
         let key = Self::build_key(access_key, filename);
 
-        if let Some(item) = self.items.get(&key) {
-            return Ok(Arc::clone(item.value()));
+        match self.items.entry(key.clone()) {
+            Entry::Occupied(o) => Ok(Arc::clone(o.get())),
+            Entry::Vacant(v) => {
+                let path = self.cache_dir.join(access_key).join(filename);
+                let item = CacheItem::open_or_create_with_db(
+                    path,
+                    key.clone(),
+                    file_size,
+                    self.range_db.clone(),
+                )?;
+                tracing::info!(file = %filename, key = %key, "cache open");
+                let r = v.insert(item);
+                Ok(Arc::clone(r.value()))
+            }
         }
-
-        let path = self.cache_dir.join(access_key).join(filename);
-        let item =
-            CacheItem::open_or_create_with_db(path, key.clone(), file_size, self.range_db.clone())?;
-        tracing::info!(file = %filename, key = %key, "cache open");
-        self.items.entry(key).or_insert_with(|| Arc::clone(&item));
-        Ok(item)
     }
 
     /// Drop in-memory entry, remove the sparse file, and delete persisted range metadata.
