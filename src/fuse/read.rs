@@ -12,7 +12,9 @@ use bytes::Bytes;
 
 use crate::cache::CacheReadError;
 use crate::config::parse_byte_size;
-use crate::rd::api::{UnrestrictCache, clear_unrestrict_cache};
+use crate::rd::api::{
+    UnrestrictCache, clear_unrestrict_cache, clear_unrestrict_cache_for_source_link,
+};
 
 use super::consts::INODE_FILE_BASE;
 use super::fs::RdFs;
@@ -191,11 +193,10 @@ pub async fn read(
 
                 if is_fatal {
                     tracing::error!(link = %torrent_link, "fatal unrestrict error, queuing repair");
-                    clear_unrestrict_cache(
-                        unrestrict_cache,
-                        fs.rd.credentials.load().token.as_str(),
-                        &torrent_link,
-                    );
+                    // Drop all token buckets for this RD link, then on-disk ranges, before marking
+                    // broken and enqueueing repair (zurg-style ordering: no stale VFS after repair).
+                    clear_unrestrict_cache_for_source_link(unrestrict_cache, &torrent_link);
+                    fs.cache.invalidate(&access_key, &sanitized);
                     let tm = fs.torrent_manager.clone();
                     let ak = access_key.clone();
                     let file_path = file.path.clone();
