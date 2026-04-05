@@ -4,6 +4,8 @@
 //! but are actually **Europe/Paris** local time. We parse them accordingly
 //! via `parse_paris_time` and store all times as `DateTime<Utc>`.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Europe::Paris;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -204,15 +206,26 @@ pub struct ActiveTorrentCountResponse {
 
 // ─── Traffic ──────────────────────────────────────────────────────────────────
 
-/// Response from `GET /rest/1.0/traffic/details`.
-/// It's a map of host -> TrafficHost.
-pub type TrafficDetailsResponse = std::collections::HashMap<String, TrafficHost>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrafficHost {
+/// One day bucket in `GET /rest/1.0/traffic/details` (API keys are ISO dates, e.g. `2015-12-09`).
+///
+/// Not to be confused with `GET /rest/1.0/traffic` (host limits); `/details` is usage **by day**.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TrafficDetailDay {
+    /// Per-host byte totals for that day.
+    #[serde(default)]
+    pub host: std::collections::HashMap<String, i64>,
+    #[serde(default)]
     pub bytes: i64,
-    pub links: i64,
-    pub reset: i64,
+}
+
+/// Response from `GET /rest/1.0/traffic/details`: date string → that day’s host breakdown + total bytes.
+pub type TrafficDetailsResponse = std::collections::HashMap<String, TrafficDetailDay>;
+
+/// In-memory snapshot of [`TrafficDetailsResponse`] for each configured download token (primary first).
+#[derive(Debug, Clone)]
+pub struct TrafficDetailsSnapshot {
+    pub fetched_at: DateTime<Utc>,
+    pub by_token: Vec<(Arc<String>, TrafficDetailsResponse)>,
 }
 
 // ─── Downloads ────────────────────────────────────────────────────────────────

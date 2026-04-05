@@ -44,6 +44,9 @@ pub(super) fn default_bandwidth_reset_timezone() -> String {
 pub(super) fn default_unrestrict_cache_sweep_interval_mins() -> u64 {
     60
 }
+pub(super) fn default_traffic_details_refresh_secs() -> u64 {
+    300
+}
 pub(super) fn default_retries() -> u32 {
     2
 }
