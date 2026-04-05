@@ -2,9 +2,9 @@
     "$schema": "https://docs.renovatebot.com/renovate-schema.json",
     "extends": [
         "config:recommended",
-        ":dependencyDashboard",
-        "security:osvVulnerabilityAlerts"
+        ":dependencyDashboard"
     ],
+    "osvVulnerabilityAlerts": true,
     "minimumReleaseAge": "3 days",
     "internalChecksFilter": "strict",
     "rangeStrategy": "update-lockfile",
@@ -52,7 +52,7 @@
     "lockFileMaintenance": {
         "enabled": true,
         "schedule": [
-            "at any time on monday"
+            "before 5am on monday"
         ]
     }
 }
