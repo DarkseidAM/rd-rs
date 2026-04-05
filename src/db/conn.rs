@@ -5,7 +5,10 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use rusqlite::params;
+use rusqlite::types::Type;
 
+use super::schema_migrate::migrate_app_meta_value_to_text;
+use super::sql::{UPSERT_REPAIR_JOB_SQL, UPSERT_TORRENT_SQL};
 use super::types::{RepairJobRow, TorrentRow, TorrentState};
 
 /// Synchronous SQLite handle (WAL mode).
@@ -79,7 +82,7 @@ impl Db {
 
             CREATE TABLE IF NOT EXISTS app_meta (
                 key   TEXT PRIMARY KEY,
-                value INTEGER NOT NULL
+                value TEXT NOT NULL
             );
             "#,
                 )?;
@@ -88,6 +91,7 @@ impl Db {
                     "ALTER TABLE torrents ADD COLUMN under_repair_started_at INTEGER",
                     [],
                 );
+                migrate_app_meta_value_to_text(conn)?;
                 Ok::<(), rusqlite::Error>(())
             })
             .await?;
@@ -105,7 +109,11 @@ impl Db {
         let mut stmt = conn.prepare("SELECT value FROM app_meta WHERE key = ?1")?;
         let mut rows = stmt.query(rusqlite::params![key])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
+            let s: String = row.get(0)?;
+            let v = s.parse::<i64>().map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(e))
+            })?;
+            Ok(Some(v))
         } else {
             Ok(None)
         }
@@ -116,10 +124,11 @@ impl Db {
         key: &str,
         value: i64,
     ) -> rusqlite::Result<()> {
+        let value_str = value.to_string();
         conn.execute(
             "INSERT INTO app_meta (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![key, value],
+            rusqlite::params![key, value_str],
         )?;
         Ok(())
     }
@@ -147,10 +156,7 @@ impl Db {
         self.conn
             .call(move |conn| -> rusqlite::Result<()> {
                 conn.execute(
-                    r#"INSERT OR REPLACE INTO torrents
-               (access_key, rd_ids, hash, name, state, unrepairable, file_states,
-                last_seen_at, last_repaired_at, under_repair_started_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
+                    UPSERT_TORRENT_SQL,
                     params![
                         row_cloned.access_key,
                         rd_ids_json,
@@ -176,13 +182,7 @@ impl Db {
     ) -> Result<()> {
         let tx = conn.transaction()?;
         {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO torrents (
-                    access_key, rd_ids, hash, name, state,
-                    unrepairable, file_states, last_seen_at, last_repaired_at,
-                    under_repair_started_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            )?;
+            let mut stmt = tx.prepare(UPSERT_TORRENT_SQL)?;
             for row in torrents {
                 let rd_ids_json = serde_json::to_string(&row.rd_ids)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -260,9 +260,7 @@ impl Db {
         let job_cloned = job.clone();
         conn.call(move |conn| -> rusqlite::Result<()> {
             conn.execute(
-                r#"INSERT OR REPLACE INTO repair_jobs
-                   (id, torrent_key, strategy, status, started_at, completed_at)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                UPSERT_REPAIR_JOB_SQL,
                 params![
                     job_cloned.id,
                     job_cloned.torrent_key,

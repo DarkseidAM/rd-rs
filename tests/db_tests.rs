@@ -1,4 +1,5 @@
 use rd_rs::db::{Db, RepairJobRow, RepairJobStatus, TorrentRow, TorrentState};
+use rusqlite::params;
 use std::str::FromStr;
 
 fn make_row(key: &str) -> TorrentRow {
@@ -73,6 +74,74 @@ async fn state_roundtrip() {
         TorrentState::UnderRepair
     );
     assert!(TorrentState::from_str("unknown").is_err());
+}
+
+#[tokio::test]
+async fn app_meta_i64_roundtrip() {
+    let db = Db::new_in_memory().await.unwrap();
+    db.init_schema().await.unwrap();
+    db.set_meta_i64("test_meta_key", 1_700_000_042)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_meta_i64("test_meta_key").await.unwrap(),
+        Some(1_700_000_042)
+    );
+}
+
+#[tokio::test]
+async fn insert_repair_job_on_conflict_updates_row() {
+    let db = Db::new_in_memory().await.unwrap();
+    db.init_schema().await.unwrap();
+
+    let j1 = RepairJobRow {
+        id: "job-upsert".into(),
+        torrent_key: "key1".into(),
+        strategy: "first".into(),
+        status: RepairJobStatus::Pending,
+        started_at: None,
+        completed_at: None,
+    };
+    db.insert_repair_job(&j1).await.unwrap();
+
+    let count: i64 = db
+        .conn
+        .call(|c| c.query_row("SELECT COUNT(*) FROM repair_jobs", [], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let j2 = RepairJobRow {
+        id: "job-upsert".into(),
+        torrent_key: "key2".into(),
+        strategy: "second".into(),
+        status: RepairJobStatus::Pending,
+        started_at: Some(99),
+        completed_at: None,
+    };
+    db.insert_repair_job(&j2).await.unwrap();
+
+    let count2: i64 = db
+        .conn
+        .call(|c| c.query_row("SELECT COUNT(*) FROM repair_jobs", [], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(count2, 1);
+
+    let (strategy, torrent_key, started): (String, String, Option<i64>) = db
+        .conn
+        .call(|c| {
+            c.query_row(
+                "SELECT strategy, torrent_key, started_at FROM repair_jobs WHERE id = ?1",
+                params!["job-upsert"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(strategy, "second");
+    assert_eq!(torrent_key, "key2");
+    assert_eq!(started, Some(99));
 }
 
 #[tokio::test]
