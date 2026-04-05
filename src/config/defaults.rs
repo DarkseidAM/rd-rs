@@ -41,6 +41,9 @@ pub(super) fn default_retries() -> u32 {
 pub(super) fn default_refresh_interval_secs() -> u64 {
     15
 }
+pub(super) fn default_cdn_reprobe_interval_mins() -> u64 {
+    0
+}
 pub(super) fn default_cache_max_size() -> String {
     "100G".into()
 }

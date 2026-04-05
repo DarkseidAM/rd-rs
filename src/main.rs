@@ -189,6 +189,39 @@ async fn run_fuse_mount() -> Result<()> {
     ));
     repair_engine.spawn();
 
+    {
+        let rd_probe = rd_client.clone();
+        let config_probe = config.clone();
+        let probe_inflight = Arc::new(tokio::sync::Mutex::new(()));
+        tokio::spawn(async move {
+            loop {
+                let mins = config_probe.load().api.cdn_reprobe_interval_mins;
+                if mins == 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    continue;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(mins.saturating_mul(60))).await;
+                let _guard = match probe_inflight.try_lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        tracing::debug!("CDN: re-probe skipped (previous run still in progress)");
+                        continue;
+                    }
+                };
+                rd_rs::rd::cdn::rerun_cdn_network_test().await;
+                match rd_rs::rd::cdn::RankedHosts::try_load() {
+                    Some(pin) => {
+                        rd_probe.ranked_hosts.store(Some(pin));
+                        tracing::info!("CDN: re-probe updated pinned host in memory");
+                    }
+                    None => tracing::warn!(
+                        "CDN: re-probe finished but RankedHosts::try_load returned none"
+                    ),
+                }
+            }
+        });
+    }
+
     let mut mount_options = fuse3::MountOptions::default();
     mount_options
         .allow_other(true)

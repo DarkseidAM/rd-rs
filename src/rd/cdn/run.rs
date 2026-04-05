@@ -23,6 +23,17 @@ pub async fn run_network_test(_rd: &crate::rd::RealDebrid, _cfg: &crate::config:
         }
     }
 
+    run_fresh_network_test().await;
+}
+
+/// Re-run latency discovery and persist results (ignores TTL). For periodic hot re-probe.
+pub async fn rerun_cdn_network_test() {
+    let _ = std::fs::create_dir_all("data");
+    tracing::info!("CDN: re-probe (forced) starting…");
+    run_fresh_network_test().await;
+}
+
+async fn run_fresh_network_test() {
     tracing::info!("CDN: fetching server list from Supabase…");
     match probe::fetch_server_list().await {
         Ok(entries) if !entries.is_empty() => {
