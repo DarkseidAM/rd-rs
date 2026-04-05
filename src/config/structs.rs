@@ -141,6 +141,10 @@ pub struct ApiConfig {
     /// How often to drop in-memory unrestrict cache entries past the 4h TTL. 0 = disabled.
     #[serde(default = "defaults::default_unrestrict_cache_sweep_interval_mins")]
     pub unrestrict_cache_sweep_interval_mins: u64,
+
+    /// Poll `GET /traffic/details` for every download token this often (seconds). Default 300 (5m, zurg-style). 0 = disabled.
+    #[serde(default = "defaults::default_traffic_details_refresh_secs")]
+    pub traffic_details_refresh_secs: u64,
 }
 
 impl Default for ApiConfig {
@@ -159,6 +163,7 @@ impl Default for ApiConfig {
             download_read_timeout_secs: 300,
             bandwidth_reset_timezone: defaults::default_bandwidth_reset_timezone(),
             unrestrict_cache_sweep_interval_mins: 60,
+            traffic_details_refresh_secs: 300,
         }
     }
 }
