@@ -8,7 +8,7 @@
 pub mod bitmap;
 #[allow(clippy::module_inception)]
 pub mod cache;
-pub(crate) mod download_session;
+pub mod download_session;
 mod eviction;
 pub mod item;
 pub(crate) mod item_read_at;

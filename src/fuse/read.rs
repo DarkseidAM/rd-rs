@@ -141,7 +141,7 @@ pub async fn read(
         if fh != 0
             && let Some(ent) = fs.open_files.get(&fh)
         {
-            let buf = std::sync::Arc::clone(ent.value());
+            let buf = std::sync::Arc::clone(&ent.value().buffer);
             drop(ent);
             let (fill_offset, fill_len, take) = {
                 let mut g = buf.lock().await;

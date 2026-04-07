@@ -150,6 +150,7 @@ fn spawn_worker(
     pause_rx: tokio::sync::watch::Receiver<bool>,
 ) -> (tokio::task::JoinHandle<()>, Arc<DownloadSession>) {
     let session = Arc::new(DownloadSession::new(offset, fetch_until));
+    let cancel = session.cancel_token();
 
     let live_download_url = Arc::new(RwLock::new(download.download.clone()));
     let link_refresh_lock = Arc::new(Mutex::new(()));
@@ -193,6 +194,7 @@ fn spawn_worker(
                 link_refresh_lock: Arc::clone(&link_refresh_lock),
                 heal_remaining: Arc::clone(&heal_remaining),
                 pause_rx,
+                cancel,
             },
         )
         .await
