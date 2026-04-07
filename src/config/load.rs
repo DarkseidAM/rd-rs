@@ -34,6 +34,18 @@ impl Config {
         if self.api.timeout_secs == 0 {
             bail!("config: api.timeout_secs must be > 0");
         }
+        if self.api.cdn_mode == super::structs::CdnMode::ForceLocation {
+            let loc_ok = self
+                .api
+                .cdn_location
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty());
+            if !loc_ok {
+                bail!(
+                    "config: api.cdn_location must be set when api.cdn_mode = \"force_location\""
+                );
+            }
+        }
         Ok(())
     }
 

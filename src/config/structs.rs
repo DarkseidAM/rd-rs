@@ -130,6 +130,15 @@ pub struct ApiConfig {
     #[serde(default = "defaults::default_cdn_reprobe_interval_mins")]
     pub cdn_reprobe_interval_mins: u64,
 
+    /// Controls how we shape CDN download URLs (zurg-style).
+    #[serde(default)]
+    pub cdn_mode: CdnMode,
+
+    /// Location/region code for `cdn_mode = "force_location"` (e.g. `"mum"`, `"lax"`, `"syd"`).
+    /// Ignored for other modes.
+    #[serde(default)]
+    pub cdn_location: Option<String>,
+
     /// Max time for a single CDN Range GET (including reading the response body for that chunk). Separate from `timeout_secs` used for API calls.
     #[serde(default = "defaults::default_download_read_timeout_secs")]
     pub download_read_timeout_secs: u64,
@@ -160,12 +169,28 @@ impl Default for ApiConfig {
             use_range_verification: false,
             retain_non_rd_downloads: false,
             cdn_reprobe_interval_mins: 0,
+            cdn_mode: CdnMode::Auto,
+            cdn_location: None,
             download_read_timeout_secs: 300,
             bandwidth_reset_timezone: defaults::default_bandwidth_reset_timezone(),
             unrestrict_cache_sweep_interval_mins: 60,
             traffic_details_refresh_secs: 300,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CdnMode {
+    /// Default behavior: keep geo-prefixed hosts if RD assigned them; otherwise pin to fastest.
+    #[default]
+    Auto,
+    /// Rewrite CDN host to `.download.real-debrid.cloud` (Cloudflare) variant.
+    ForceCloudflare,
+    /// Ensure we use a numbered host (e.g. `53.download.real-debrid.com`) chosen from reachable set.
+    ForceNumbered,
+    /// Force a location prefix by rewriting to a reachable host matching `cdn_location`.
+    ForceLocation,
 }
 
 #[derive(Debug, Clone, Deserialize)]

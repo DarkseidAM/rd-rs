@@ -19,7 +19,15 @@ impl RealDebrid {
         link: &str,
     ) -> Result<Download, RdError> {
         let link_arc = Arc::new(link.to_string());
-        let form_body = format!("link={}", urlencoding_encode(link));
+        let mut form_body = format!("link={}", urlencoding_encode(link));
+        if self.config.api.cdn_mode == crate::config::CdnMode::ForceLocation
+            && let Some(loc) = self.config.api.cdn_location.as_deref()
+            && let Some(pin) = &*self.ranked_hosts.load()
+            && let Some(ip) = pin.geo_unrestrict_ip(loc, link)
+        {
+            form_body.push_str("&ip=");
+            form_body.push_str(&urlencoding_encode(&ip));
+        }
         let url = format!(
             "{}/rest/1.0/unrestrict/link",
             self.config.api.base_url.trim_end_matches('/')
