@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{self, Duration};
+use tokio_util::sync::CancellationToken;
 
 /// If no bytes are written to cache for this duration, cancel the in-flight
 /// HTTP stream attempt and retry from the same offset.
@@ -48,6 +49,7 @@ pub(crate) struct DownloaderArgs {
     pub link_refresh_lock: Arc<Mutex<()>>,
     pub heal_remaining: Arc<AtomicU32>,
     pub pause_rx: tokio::sync::watch::Receiver<bool>,
+    pub cancel: CancellationToken,
 }
 
 /// HTTP Range GET pool for `[start, file_end)` using concurrent connection chunking
@@ -66,6 +68,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
         link_refresh_lock,
         heal_remaining,
         pause_rx,
+        cancel,
     } = args;
 
     // Apply read-ahead: download further than strictly needed.
@@ -109,12 +112,19 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
         let item_clone = Arc::clone(item);
         let mut p_rx = pause_rx.clone();
         let mult = Arc::clone(&shared_multiplier);
+        let cancel = cancel.clone();
 
         join_set.spawn(async move {
 
             loop {
+                if cancel.is_cancelled() {
+                    break Ok::<(), anyhow::Error>(());
+                }
                 if *p_rx.borrow() {
-                    let _ = p_rx.changed().await;
+                    tokio::select! {
+                        _ = cancel.cancelled() => break Ok::<(), anyhow::Error>(()),
+                        _ = p_rx.changed() => {}
+                    }
                 }
 
                 let chunk_opt = {
@@ -136,9 +146,16 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                 let mut retries = 0;
 
                 loop {
+                    if cancel.is_cancelled() {
+                        return Ok::<(), anyhow::Error>(());
+                    }
                     // Acquire global RD semaphore permit!
-                    let _permit = rd_clone.connection_semaphore.acquire().await
-                        .map_err(|e| anyhow::anyhow!("Semaphore closed: {}", e))?;
+                    let _permit = tokio::select! {
+                        _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                        p = rd_clone.connection_semaphore.acquire() => {
+                            p.map_err(|e| anyhow::anyhow!("Semaphore closed: {}", e))?
+                        }
+                    };
 
                     let range_header = format!("bytes={}-{}", chunk_start, chunk_end - 1);
 
@@ -146,12 +163,16 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                     let last_progress = Arc::new(AtomicU64::new(elapsed_nanos()));
                     let lp_clone = Arc::clone(&last_progress);
                     let (watchdog_tx, mut watchdog_rx) = tokio::sync::oneshot::channel::<()>();
+                    let cancel_watchdog = cancel.clone();
 
                     let watchdog = tokio::spawn(async move {
                         let mut interval = time::interval(NO_PROGRESS_CHECK);
                         let timeout_nanos = NO_PROGRESS_TIMEOUT.as_nanos() as u64;
                         loop {
                             interval.tick().await;
+                            if cancel_watchdog.is_cancelled() {
+                                return;
+                            }
                             if watchdog_tx.is_closed() { return; }
                             let last = lp_clone.load(Ordering::Acquire);
                             let now = elapsed_nanos();
@@ -242,6 +263,10 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                             }
                             continue;
                         }
+                        _ = cancel.cancelled() => {
+                            watchdog.abort();
+                            return Ok::<(), anyhow::Error>(());
+                        }
                     };
 
                     let mut chunk_bytes_downloaded = 0u64;
@@ -257,6 +282,10 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                     "stream body stalled for {secs}s"
                                 ));
                                 break;
+                            }
+                            _ = cancel.cancelled() => {
+                                watchdog.abort();
+                                return Ok::<(), anyhow::Error>(());
                             }
                         };
 
@@ -317,7 +346,10 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                 queue_clone.lock().push_front((new_chunk_end, chunk_end));
                                 chunk_end = new_chunk_end;
                             }
-                            time::sleep(Duration::from_secs(retries as u64 * 2)).await;
+                            tokio::select! {
+                                _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
+                                _ = time::sleep(Duration::from_secs(retries as u64 * 2)) => {}
+                            }
                         }
                     }
                 } // End retry loop
