@@ -10,6 +10,8 @@ fn parse_minimal_toml() {
     assert_eq!(cfg.api.rate_limit_per_minute, 250);
     assert_eq!(cfg.api.refresh_interval_secs, 15);
     assert_eq!(cfg.api.cdn_reprobe_interval_mins, 0);
+    assert_eq!(cfg.api.cdn_mode, rd_rs::config::CdnMode::Auto);
+    assert_eq!(cfg.api.cdn_location, None);
     assert_eq!(cfg.api.download_read_timeout_secs, 300);
     assert_eq!(cfg.api.bandwidth_reset_timezone, "Europe/Paris");
     assert_eq!(cfg.api.unrestrict_cache_sweep_interval_mins, 60);
@@ -37,6 +39,8 @@ fn parse_full_toml() {
         rate_limit_per_minute = 100
         timeout_secs = 30
         refresh_interval_secs = 45
+        cdn_mode = "force_location"
+        cdn_location = "mum"
 
         [vfs]
         chunk_size = "8M"
@@ -47,6 +51,8 @@ fn parse_full_toml() {
     assert_eq!(cfg.repair.every_mins, 30);
     assert_eq!(cfg.api.rate_limit_per_minute, 100);
     assert_eq!(cfg.api.refresh_interval_secs, 45);
+    assert_eq!(cfg.api.cdn_mode, rd_rs::config::CdnMode::ForceLocation);
+    assert_eq!(cfg.api.cdn_location.as_deref(), Some("mum"));
     assert_eq!(cfg.vfs.chunk_size, "8M");
     assert_eq!(cfg.vfs.max_parallel_streams, 4);
 }
@@ -54,6 +60,16 @@ fn parse_full_toml() {
 #[test]
 fn empty_token_fails_validation() {
     let toml = r#"token = """#;
+    assert!(Config::from_toml(toml).is_err());
+}
+
+#[test]
+fn force_location_requires_location() {
+    let toml = r#"
+        token = "ABC"
+        [api]
+        cdn_mode = "force_location"
+    "#;
     assert!(Config::from_toml(toml).is_err());
 }
 
