@@ -30,11 +30,13 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use fuse3::raw::prelude::*;
 use fuse3::{Errno, Result as FuseResult};
+use tokio_util::sync::CancellationToken;
 
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::fuse::consts::{INODE_ALL, INODE_FILE_BASE, INODE_ROOT, INODE_TORRENT_BASE};
-use crate::fuse::vfs_read_buffer::VfsReadBuffer;
+use crate::fuse::open_file::OpenFileState;
+use crate::fuse::read_cancel_bridge::FuseReadCancelRegistration;
 use crate::rd::RealDebrid;
 use crate::rd::api::UnrestrictCache;
 use crate::torrent::{ManagedTorrent, TorrentManager};
@@ -60,7 +62,9 @@ pub struct RdFs {
     /// Next FUSE file handle for regular files (`>= 1`; `0` = no per-fd buffer).
     pub(crate) next_fh: AtomicU64,
     /// Per-`fh` read-ahead buffer for file opens (see `vfs_read_buffer`).
-    pub(crate) open_files: DashMap<u64, Arc<tokio::sync::Mutex<VfsReadBuffer>>>,
+    pub(crate) open_files: DashMap<u64, Arc<OpenFileState>>,
+    /// In-flight `read` requests by FUSE `unique` (for [`Filesystem::interrupt`] / Ctrl+C).
+    pub(crate) pending_fuse_reads: Arc<DashMap<u64, CancellationToken>>,
     /// Kernel attribute cache TTL (from `vfs.attr_timeout_secs`).
     pub(crate) attr_ttl: Duration,
     /// Kernel directory-entry cache TTL (from `vfs.entry_timeout_secs`).
@@ -94,6 +98,7 @@ impl RdFs {
             broken_read_warn_ts: DashMap::new(),
             next_fh: AtomicU64::new(1),
             open_files: DashMap::new(),
+            pending_fuse_reads: Arc::new(DashMap::new()),
             attr_ttl: Duration::from_secs(vfs.attr_timeout_secs),
             entry_ttl: Duration::from_secs(vfs.entry_timeout_secs),
         }
@@ -203,10 +208,7 @@ impl Filesystem for RdFs {
             let fh = self
                 .next_fh
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.open_files.insert(
-                fh,
-                Arc::new(tokio::sync::Mutex::new(VfsReadBuffer::default())),
-            );
+            self.open_files.insert(fh, Arc::new(OpenFileState::new()));
             return Ok(ReplyOpen { fh, flags: 0 });
         }
         Ok(ReplyOpen { fh: 0, flags: 0 })
@@ -221,7 +223,9 @@ impl Filesystem for RdFs {
         _lock_owner: u64,
         _flush: bool,
     ) -> FuseResult<()> {
-        self.open_files.remove(&fh);
+        if let Some((_, st)) = self.open_files.remove(&fh) {
+            st.cancel();
+        }
         Ok(())
     }
 
@@ -235,15 +239,34 @@ impl Filesystem for RdFs {
         Ok(())
     }
 
+    async fn interrupt(&self, _req: Request, unique: u64) -> FuseResult<()> {
+        if let Some((_, t)) = self.pending_fuse_reads.remove(&unique) {
+            t.cancel();
+            tracing::info!(unique, "fuse interrupt: cancelled in-flight read");
+        }
+        Ok(())
+    }
+
     async fn read(
         &self,
-        _req: Request,
+        req: Request,
         inode: u64,
         fh: u64,
         offset: u64,
         size: u32,
     ) -> FuseResult<ReplyData> {
-        let ctx = tokio_util::sync::CancellationToken::new();
+        let fh_token = self
+            .open_files
+            .get(&fh)
+            .map(|e| e.value().cancel_token())
+            .unwrap_or_default();
+
+        let _read_cancel = FuseReadCancelRegistration::new(
+            req.unique,
+            fh_token,
+            Arc::clone(&self.pending_fuse_reads),
+        );
+        let ctx = _read_cancel.token();
         super::read::read(self, inode, fh, offset, size, &self.unrestrict_cache, ctx).await
     }
 }
