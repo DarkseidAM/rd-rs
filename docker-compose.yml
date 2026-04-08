@@ -3,7 +3,12 @@ services:
   rd-rs:
     build: .
     image: rd-rs:local
-    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse:/dev/fuse
+    security_opt:
+      - apparmor:unconfined
     volumes:
       - ./config.toml:/app/config.toml:ro
       - rd-cache:/data/cache
