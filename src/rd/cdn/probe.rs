@@ -108,7 +108,11 @@ pub(super) async fn dns_probe_fallback() -> NetworkTestResults {
     let latency_map = ipv4_latency.lock().await.clone();
 
     if let Some((host, latency)) = latency_map.iter().min_by(|a, b| a.1.total_cmp(b.1)) {
-        tracing::info!("CDN: fastest host = {} ({:.3}s)", host, latency);
+        tracing::info!(
+            "CDN: fastest host (dns-fallback) = {} ({:.3}s)",
+            host,
+            latency
+        );
     }
 
     NetworkTestResults {
@@ -118,64 +122,40 @@ pub(super) async fn dns_probe_fallback() -> NetworkTestResults {
 }
 
 pub(super) async fn run_latency_test_on_entries(entries: Vec<ServerEntry>) -> NetworkTestResults {
-    let mut builder = Client::builder().timeout(Duration::from_secs(5));
-
-    // Pre-seed reqwest's DNS resolver map to absolutely bypass DNS lookups during the latency sweep.
-    // This removes DNS fetching variability and strictly tests TCP/TLS rtt.
-    for entry in &entries {
-        if let Some(ipv4) = &entry.ipv4
-            && let Ok(ip) = ipv4.parse::<std::net::IpAddr>()
-        {
-            builder = builder.resolve(&entry.hostname, std::net::SocketAddr::new(ip, 443));
+    // Split entries by which families they have addresses for.
+    let mut ipv4_entries: Vec<(String, String)> = Vec::new(); // (hostname, ipv4)
+    let mut ipv6_entries: Vec<(String, String)> = Vec::new(); // (hostname, ipv6)
+    for e in &entries {
+        if let Some(ip) = &e.ipv4 {
+            ipv4_entries.push((e.hostname.clone(), ip.clone()));
         }
-        // ipv6 addresses might contain brackets or port specs in some cases, handle standard parsing
-        if let Some(ipv6) = &entry.ipv6
-            && let Ok(ip) = ipv6
-                .trim_matches(|c| c == '[' || c == ']')
-                .parse::<std::net::IpAddr>()
-        {
-            builder = builder.resolve(&entry.hostname, std::net::SocketAddr::new(ip, 443));
+        if let Some(ip) = &e.ipv6 {
+            ipv6_entries.push((e.hostname.clone(), ip.clone()));
         }
     }
 
-    let client = builder.build().expect("build client");
+    // Run both family probes in parallel.
+    let (ipv4_result, ipv6_result) =
+        tokio::join!(probe_family(ipv4_entries), probe_family(ipv6_entries),);
 
-    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
-    let mut handles = Vec::with_capacity(entries.len());
-
-    for entry in entries {
-        let sem = sem.clone();
-        let c = client.clone();
-        handles.push(tokio::spawn(async move {
-            let _permit = sem.acquire().await.ok()?;
-            let test_url = format!("https://{}/__test", entry.hostname);
-            let start = Instant::now();
-            let _ = c.head(&test_url).send().await;
-            let latency = start.elapsed().as_secs_f64();
-            Some((entry, latency))
-        }));
-    }
-
-    let mut ipv4_latency = HashMap::new();
-    let mut ipv4_addresses = HashMap::new();
-    let mut ipv6_latency = HashMap::new();
-    let mut ipv6_addresses = HashMap::new();
-
-    for h in handles {
-        if let Ok(Some((entry, latency))) = h.await {
-            if let Some(ipv4) = entry.ipv4 {
-                ipv4_latency.insert(entry.hostname.clone(), latency);
-                ipv4_addresses.insert(entry.hostname.clone(), ipv4);
-            }
-            if let Some(ipv6) = entry.ipv6 {
-                ipv6_latency.insert(entry.hostname.clone(), latency);
-                ipv6_addresses.insert(entry.hostname, ipv6);
-            }
-        }
-    }
+    let (ipv4_latency, ipv4_addresses) = ipv4_result;
+    let (ipv6_latency, ipv6_addresses) = ipv6_result;
 
     if let Some((host, latency)) = ipv4_latency.iter().min_by(|a, b| a.1.total_cmp(b.1)) {
-        tracing::info!("CDN: fastest IPv4 host = {} ({:.3}s)", host, latency);
+        tracing::info!(
+            "CDN: fastest IPv4 host = {} ({:.3}s) [{} reachable]",
+            host,
+            latency,
+            ipv4_latency.len()
+        );
+    }
+    if let Some((host, latency)) = ipv6_latency.iter().min_by(|a, b| a.1.total_cmp(b.1)) {
+        tracing::info!(
+            "CDN: fastest IPv6 host = {} ({:.3}s) [{} reachable]",
+            host,
+            latency,
+            ipv6_latency.len()
+        );
     }
 
     NetworkTestResults {
@@ -184,6 +164,53 @@ pub(super) async fn run_latency_test_on_entries(entries: Vec<ServerEntry>) -> Ne
         ipv6_latency,
         ipv6_addresses,
     }
+}
+
+/// Probe a list of `(hostname, ip)` pairs over a single address family.
+///
+/// The reqwest client is pre-seeded with only the provided IPs so every TCP
+/// connection is forced through the correct address family — no Happy Eyeballs
+/// ambiguity.  Returns `(latency_map, address_map)`.
+async fn probe_family(
+    entries: Vec<(String, String)>,
+) -> (HashMap<String, f64>, HashMap<String, String>) {
+    if entries.is_empty() {
+        return (HashMap::new(), HashMap::new());
+    }
+
+    let mut builder = Client::builder().timeout(Duration::from_secs(5));
+    for (hostname, ip_str) in &entries {
+        let clean = ip_str.trim_matches(|c| c == '[' || c == ']');
+        if let Ok(ip) = clean.parse::<std::net::IpAddr>() {
+            builder = builder.resolve(hostname, std::net::SocketAddr::new(ip, 443));
+        }
+    }
+    let client = Arc::new(builder.build().expect("build family client"));
+    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let mut handles = Vec::with_capacity(entries.len());
+
+    for (hostname, ip) in entries {
+        let c = client.clone();
+        let sem = sem.clone();
+        handles.push(tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok()?;
+            let test_url = format!("https://{}/__test", hostname);
+            let start = Instant::now();
+            let _ = c.head(&test_url).send().await;
+            let latency = start.elapsed().as_secs_f64();
+            Some((hostname, ip, latency))
+        }));
+    }
+
+    let mut latency_map = HashMap::new();
+    let mut addr_map = HashMap::new();
+    for h in handles {
+        if let Ok(Some((hostname, ip, latency))) = h.await {
+            latency_map.insert(hostname.clone(), latency);
+            addr_map.insert(hostname, ip);
+        }
+    }
+    (latency_map, addr_map)
 }
 
 pub(super) async fn fetch_server_list() -> Result<Vec<ServerEntry>> {

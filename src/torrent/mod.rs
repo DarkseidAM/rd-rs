@@ -118,10 +118,10 @@ pub struct TorrentManager {
     pub unrestrict_cache: UnrestrictCache,
 
     /// Channel to send path lists to the hook worker.
-    pub(crate) hook_tx: mpsc::Sender<Vec<String>>,
+    pub(crate) hook_tx: mpsc::UnboundedSender<Vec<String>>,
 
     /// Receiver for the hook worker (extracted once on start).
-    pub(crate) hook_rx: std::sync::Mutex<Option<mpsc::Receiver<Vec<String>>>>,
+    pub(crate) hook_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<Vec<String>>>>,
 
     /// CancellationToken — call `.cancel()` to stop all background tasks.
     pub(crate) shutdown: CancellationToken,
@@ -147,7 +147,7 @@ impl TorrentManager {
     ) -> anyhow::Result<Self> {
         let torrents = Arc::new(DashMap::new());
         let shutdown = CancellationToken::new();
-        let (hook_tx, hook_rx) = mpsc::channel(256);
+        let (hook_tx, hook_rx) = mpsc::unbounded_channel();
         let repair_notify = Arc::new(Notify::new());
         let repair_queue = Arc::new(Mutex::new(VecDeque::new()));
         let fuse_fatal_read_locks = Arc::new(Mutex::new(HashSet::new()));
@@ -264,7 +264,8 @@ impl TorrentManager {
         if paths.is_empty() {
             return;
         }
-        let _ = self.hook_tx.try_send(paths);
+        // Unbounded channel: only fails if receiver is dropped (shutdown), safe to ignore.
+        let _ = self.hook_tx.send(paths);
     }
 
     /// Build the filesystem paths that represent a torrent.

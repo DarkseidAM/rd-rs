@@ -13,17 +13,17 @@ pub struct RankedHosts {
 }
 
 impl RankedHosts {
-    /// Loads the latest NetworkTestResults from disk and parses the fastest host.
-    /// Returns None if results don't exist, are expired, or empty.
-    pub fn try_load() -> Option<Arc<Self>> {
+    /// Loads the latest NetworkTestResults from disk and builds the fastest-host ranking.
+    ///
+    /// Candidate pool selection (controlled by `cfg`):
+    /// - `cdn_force_ipv6 = true` → IPv6 latency pool only.
+    /// - `cdn_ipv6_enabled = true` (default) → merge IPv4 + IPv6; keep lower latency on collision.
+    /// - `cdn_ipv6_enabled = false` → IPv4 only.
+    ///
+    /// Returns `None` if results don't exist, are expired, or the candidate pool is empty.
+    pub fn try_load(cfg: &crate::config::ApiConfig) -> Option<Arc<Self>> {
         let results = super::run::load_cached_results()?;
-
-        // Find the host with the minimum latency in a single pass O(N).
-        // TODO: check for ipv6_latency also
-        let (fastest, latency) = results
-            .ipv4_latency
-            .into_iter()
-            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        let (fastest, latency) = rank_candidates(&results, cfg)?;
 
         tracing::info!("RankedHosts: pinning to {} ({:.3}s)", fastest, latency);
 
@@ -33,7 +33,42 @@ impl RankedHosts {
             ipv4_addresses: Arc::new(results.ipv4_addresses),
         }))
     }
+}
 
+/// Pure function: apply the IPv6 config flags to `results` and return the `(host, latency)`
+/// with lowest latency from the selected candidate pool.
+///
+/// This is extracted so it can be tested without disk I/O.
+pub fn rank_candidates(
+    results: &super::types::NetworkTestResults,
+    cfg: &crate::config::ApiConfig,
+) -> Option<(String, f64)> {
+    let candidates: HashMap<String, f64> = if cfg.cdn_force_ipv6 {
+        results.ipv6_latency.clone()
+    } else if cfg.cdn_ipv6_enabled {
+        let mut merged = results.ipv4_latency.clone();
+        for (host, lat) in &results.ipv6_latency {
+            merged
+                .entry(host.clone())
+                .and_modify(|existing| {
+                    if *lat < *existing {
+                        *existing = *lat;
+                    }
+                })
+                .or_insert(*lat);
+        }
+        merged
+    } else {
+        results.ipv4_latency.clone()
+    };
+
+    candidates
+        .iter()
+        .min_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(h, l)| (h.clone(), *l))
+}
+
+impl RankedHosts {
     /// Rewrites a `.download.real-debrid.com` URL to use the fastest host instead.
     /// Retains the original path and scheme.
     /// Returns None if it's not a real-debrid CDN URL, parsing fails,

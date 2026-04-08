@@ -122,6 +122,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                 }
                 if *p_rx.borrow() {
                     tokio::select! {
+                        biased;
                         _ = cancel.cancelled() => break Ok::<(), anyhow::Error>(()),
                         _ = p_rx.changed() => {}
                     }
@@ -196,6 +197,36 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                         g.clone()
                     };
                     let mut resp = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => {
+                            watchdog.abort();
+                            return Ok::<(), anyhow::Error>(());
+                        }
+                        _ = &mut watchdog_rx => {
+                            watchdog.abort();
+                            let secs = no_progress_timeout_secs();
+                            tracing::warn!(
+                                chunk_start,
+                                range = %range_header,
+                                stall_timeout_secs = secs,
+                                "stream headers stalled for {}s",
+                                secs
+                            );
+                            retries += 1;
+                            if retries >= MAX_DOWNLOAD_RETRIES {
+                                return Err(anyhow::anyhow!(
+                                    "stream stalled (headers): no progress for {secs}s at {chunk_start} ({range_header})"
+                                ));
+                            }
+                            mult.store(1, Ordering::Relaxed);
+                            let chunk_size = chunk_end - chunk_start;
+                            if chunk_size > base_chunk {
+                                let new_chunk_end = chunk_start + base_chunk;
+                                queue_clone.lock().push_front((new_chunk_end, chunk_end));
+                                chunk_end = new_chunk_end;
+                            }
+                            continue;
+                        }
                         res = rd_clone.http_range_get(&url_snapshot, &range_header) => {
                             match res {
                                 Ok(r) => r,
@@ -238,35 +269,6 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                 }
                             }
                         }
-                        _ = &mut watchdog_rx => {
-                            watchdog.abort();
-                            let secs = no_progress_timeout_secs();
-                            tracing::warn!(
-                                chunk_start,
-                                range = %range_header,
-                                stall_timeout_secs = secs,
-                                "stream headers stalled for {}s",
-                                secs
-                            );
-                            retries += 1;
-                            if retries >= MAX_DOWNLOAD_RETRIES {
-                                return Err(anyhow::anyhow!(
-                                    "stream stalled (headers): no progress for {secs}s at {chunk_start} ({range_header})"
-                                ));
-                            }
-                            mult.store(1, Ordering::Relaxed);
-                            let chunk_size = chunk_end - chunk_start;
-                            if chunk_size > base_chunk {
-                                let new_chunk_end = chunk_start + base_chunk;
-                                queue_clone.lock().push_front((new_chunk_end, chunk_end));
-                                chunk_end = new_chunk_end;
-                            }
-                            continue;
-                        }
-                        _ = cancel.cancelled() => {
-                            watchdog.abort();
-                            return Ok::<(), anyhow::Error>(());
-                        }
                     };
 
                     let mut chunk_bytes_downloaded = 0u64;
@@ -275,7 +277,11 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
 
                     loop {
                         let chunk_res = tokio::select! {
-                            res = resp.chunk() => res,
+                            biased;
+                            _ = cancel.cancelled() => {
+                                watchdog.abort();
+                                return Ok::<(), anyhow::Error>(());
+                            }
                             _ = &mut watchdog_rx => {
                                 let secs = no_progress_timeout_secs();
                                 download_error = Some(anyhow::anyhow!(
@@ -283,10 +289,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                 ));
                                 break;
                             }
-                            _ = cancel.cancelled() => {
-                                watchdog.abort();
-                                return Ok::<(), anyhow::Error>(());
-                            }
+                            res = resp.chunk() => res,
                         };
 
                         match chunk_res {
