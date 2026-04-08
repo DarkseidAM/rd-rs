@@ -116,7 +116,6 @@ pub async fn read(
             Errno::from(libc::EIO)
         })?;
 
-    cache_item.open();
     // Decrement on exit (regardless of success/failure path).
     struct ReleaseGuard<'a>(&'a crate::cache::CacheItem);
     impl Drop for ReleaseGuard<'_> {

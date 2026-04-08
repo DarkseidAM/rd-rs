@@ -91,8 +91,8 @@ impl Cache {
     ) -> anyhow::Result<Arc<CacheItem>> {
         let key = Self::build_key(access_key, filename);
 
-        match self.items.entry(key.clone()) {
-            Entry::Occupied(o) => Ok(Arc::clone(o.get())),
+        let item = match self.items.entry(key.clone()) {
+            Entry::Occupied(o) => Arc::clone(o.get()),
             Entry::Vacant(v) => {
                 let path = self.cache_dir.join(access_key).join(filename);
                 let item = CacheItem::open_or_create_with_db(
@@ -103,9 +103,14 @@ impl Cache {
                 )?;
                 tracing::info!(file = %filename, key = %key, "cache open");
                 let r = v.insert(item);
-                Ok(Arc::clone(r.value()))
+                Arc::clone(r.value())
             }
-        }
+        };
+
+        // Mark open *before* returning so the eviction loop cannot remove this key while a caller
+        // is in-flight between get_or_create() and CacheItem::open().
+        item.open();
+        Ok(item)
     }
 
     /// Drop in-memory entry, remove the sparse file, and delete persisted range metadata.
@@ -160,6 +165,11 @@ impl Cache {
             interval.tick().await;
             super::eviction::evict(self);
         }
+    }
+
+    /// Run one eviction pass immediately (useful for tests / ops).
+    pub fn evict_once(&self) {
+        super::eviction::evict(self);
     }
 
     pub fn evict_disk_lru(&self, threshold: u64, now_secs: u64) {

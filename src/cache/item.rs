@@ -158,6 +158,11 @@ impl CacheItem {
         self.atime.load(Ordering::Relaxed)
     }
 
+    /// Force-set atime (seconds since epoch). Intended for tests/diagnostics.
+    pub fn set_atime_secs(&self, secs: u64) {
+        self.atime.store(secs, Ordering::Relaxed);
+    }
+
     /// Returns `true` if `[start, end)` is fully in the on-disk cache.
     pub fn has_range(&self, start: u64, end: u64) -> bool {
         self.ranges.read().has_range(start, end)
