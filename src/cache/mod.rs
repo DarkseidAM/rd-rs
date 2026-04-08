@@ -12,7 +12,7 @@ pub mod download_session;
 mod eviction;
 pub mod item;
 pub(crate) mod item_read_at;
-pub(crate) mod link_heal;
+pub mod link_heal;
 pub(crate) mod range_db;
 pub(crate) mod worker;
 
