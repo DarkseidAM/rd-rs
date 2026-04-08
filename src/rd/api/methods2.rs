@@ -1,10 +1,12 @@
 //! RealDebrid API methods: unrestrict, select files, delete, add magnet, downloads, verify.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 
 use crate::rd::RealDebrid;
 use crate::rd::api::helpers::{extract_base_download_url, urlencoding_encode};
-use crate::rd::api::{UNRESTRICT_CACHE_TTL, UnrestrictCache};
+use crate::rd::api::{UNRESTRICT_CACHE_TTL, UnrestrictCache, UnrestrictCacheKey};
 use crate::rd::client::RdError;
 use crate::rd::types::*;
 use tokio::time::Instant;
@@ -15,7 +17,10 @@ impl RealDebrid {
         cache: &UnrestrictCache,
         link: &str,
     ) -> Result<Download, RdError> {
-        if let Some(entry) = cache.get(link) {
+        let token = self.credentials.load().token.clone();
+        let key = UnrestrictCacheKey::new(Arc::clone(&token), Arc::new(link.to_string()));
+
+        if let Some(entry) = cache.get(&key) {
             let (dl, cached_at) = entry.value();
             if cached_at.elapsed() < UNRESTRICT_CACHE_TTL {
                 return Ok(dl.clone());
@@ -40,16 +45,12 @@ impl RealDebrid {
 
         let mut download: Download = resp.json().await.map_err(RdError::Network)?;
         download.generated_at = Some(chrono::Utc::now());
-        download.token = self.config.token.clone();
+        download.token = (*token).clone();
 
         download.download = extract_base_download_url(&download.download);
-        cache.insert(link.to_string(), (download.clone(), Instant::now()));
+        cache.insert(key, (download.clone(), Instant::now()));
 
         Ok(download)
-    }
-
-    pub fn clear_unrestrict_cache(cache: &UnrestrictCache, link: &str) {
-        cache.remove(link);
     }
 
     pub async fn select_torrent_files(&self, id: &str, files: &str) -> Result<(), RdError> {

@@ -5,6 +5,7 @@ use chrono::Utc;
 use rd_rs::config::Config;
 use rd_rs::db::{Db, TorrentState};
 use rd_rs::rd::RealDebrid;
+use rd_rs::rd::api::new_unrestrict_cache;
 use rd_rs::rd::types::Torrent;
 use rd_rs::torrent::refresh::coordination::{
     rd_id_belongs_to_under_repair, skip_local_remove_for_state,
@@ -40,6 +41,7 @@ async fn rd_id_under_repair_detected() {
         rd,
         Arc::new(db.conn.clone()),
         Arc::new(ArcSwap::from_pointee(cfg)),
+        new_unrestrict_cache(),
     )
     .await
     .unwrap();

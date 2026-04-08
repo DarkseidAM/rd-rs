@@ -143,9 +143,9 @@ impl TorrentManager {
         rd: Arc<RealDebrid>,
         db: Arc<tokio_rusqlite::Connection>,
         config: Arc<ArcSwap<Config>>,
+        unrestrict_cache: crate::rd::api::UnrestrictCache,
     ) -> anyhow::Result<Self> {
         let torrents = Arc::new(DashMap::new());
-        let unrestrict_cache = crate::rd::api::new_unrestrict_cache();
         let shutdown = CancellationToken::new();
         let (hook_tx, hook_rx) = mpsc::channel(256);
         let repair_notify = Arc::new(Notify::new());

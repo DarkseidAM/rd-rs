@@ -2,6 +2,7 @@ use arc_swap::ArcSwap;
 use rd_rs::config::Config;
 use rd_rs::db::Db;
 use rd_rs::rd::RealDebrid;
+use rd_rs::rd::api::new_unrestrict_cache;
 use rd_rs::repair::engine::RepairEngine;
 use rd_rs::torrent::TorrentManager;
 use std::sync::Arc;
@@ -30,6 +31,7 @@ async fn test_repair_engine_spawn_and_shutdown() {
         rd.clone(),
         Arc::new(db.conn.clone()),
         Arc::new(ArcSwap::from_pointee(cfg.clone())),
+        new_unrestrict_cache(),
     )
     .await
     .unwrap();

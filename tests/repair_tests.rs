@@ -3,6 +3,7 @@ use chrono::Utc;
 use rd_rs::config::Config;
 use rd_rs::db::{Db, TorrentState};
 use rd_rs::rd::RealDebrid;
+use rd_rs::rd::api::new_unrestrict_cache;
 use rd_rs::rd::types::Torrent;
 use rd_rs::repair::reasons;
 use rd_rs::repair::{Strategy, UnrepairableReason};
@@ -42,6 +43,7 @@ async fn test_torrent_state_transitions() {
         rd,
         Arc::new(db.conn.clone()),
         Arc::new(ArcSwap::from_pointee(cfg)),
+        new_unrestrict_cache(),
     )
     .await
     .unwrap();

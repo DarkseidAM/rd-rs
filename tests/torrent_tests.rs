@@ -52,6 +52,7 @@ async fn ensure_torrent_info_preserves_concurrent_state() {
     use rd_rs::db::Db;
     use rd_rs::db::TorrentState;
     use rd_rs::rd::RealDebrid;
+    use rd_rs::rd::api::new_unrestrict_cache;
     use rd_rs::rd::types::Torrent;
     use rd_rs::torrent::{ManagedTorrent, TorrentManager};
     use std::sync::Arc;
@@ -79,9 +80,14 @@ async fn ensure_torrent_info_preserves_concurrent_state() {
     let db = Db::new_in_memory().await.unwrap();
     db.init_schema().await.unwrap();
     let tm = Arc::new(
-        TorrentManager::new(rd, Arc::new(db.conn), Arc::new(ArcSwap::from_pointee(cfg)))
-            .await
-            .unwrap(),
+        TorrentManager::new(
+            rd,
+            Arc::new(db.conn),
+            Arc::new(ArcSwap::from_pointee(cfg)),
+            new_unrestrict_cache(),
+        )
+        .await
+        .unwrap(),
     );
 
     let mt = ManagedTorrent {
