@@ -68,8 +68,9 @@ pub fn clear_unrestrict_cache_all(cache: &UnrestrictCache) {
 /// Returns how many entries were removed.
 pub fn sweep_unrestrict_cache_expired(cache: &UnrestrictCache, max_age: Duration) -> usize {
     let mut n = 0;
+    let now = Instant::now();
     cache.retain(|_, (_, at)| {
-        if at.elapsed() >= max_age {
+        if now.saturating_duration_since(*at) >= max_age {
             n += 1;
             false
         } else {

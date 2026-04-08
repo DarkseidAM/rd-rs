@@ -122,7 +122,7 @@ impl RdClient {
                 if rd_err.is_bandwidth_limited()
                     && let Some(pool) = &self.config.download_token_pool
                 {
-                    pool.mark_exhausted(&*active_token);
+                    pool.mark_exhausted(&active_token);
                     token_attempts += 1;
                     if token_attempts < max_token_attempts && pool.any_non_exhausted() {
                         tracing::warn!(

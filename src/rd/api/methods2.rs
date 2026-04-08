@@ -65,7 +65,7 @@ impl RealDebrid {
             {
                 Ok(r) => r,
                 Err(e) if e.is_bandwidth_limited() => {
-                    self.token_pool.mark_exhausted(&*token);
+                    self.token_pool.mark_exhausted(&token);
                     last_bandwidth = Some(e);
                     continue;
                 }
