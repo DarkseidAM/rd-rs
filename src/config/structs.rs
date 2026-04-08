@@ -125,6 +125,10 @@ pub struct ApiConfig {
 
     #[serde(default)]
     pub retain_non_rd_downloads: bool,
+
+    /// If > 0, re-run CDN latency test every N minutes and update pinned host (`RankedHosts`) without restart. 0 = disabled.
+    #[serde(default = "defaults::default_cdn_reprobe_interval_mins")]
+    pub cdn_reprobe_interval_mins: u64,
 }
 
 impl Default for ApiConfig {
@@ -139,6 +143,7 @@ impl Default for ApiConfig {
             refresh_interval_secs: 15,
             use_range_verification: false,
             retain_non_rd_downloads: false,
+            cdn_reprobe_interval_mins: 0,
         }
     }
 }
