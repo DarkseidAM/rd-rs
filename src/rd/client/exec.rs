@@ -44,7 +44,7 @@ impl RdClient {
     /// when trying alternate pool tokens). Ignores the download token pool rotation index.
     pub async fn execute_with_fixed_bearer(
         &self,
-        bearer: &str,
+        bearer: Arc<String>,
         build: impl Fn(bool) -> reqwest::RequestBuilder,
     ) -> Result<Response, RdError> {
         self.execute_impl(Some(bearer), build).await
@@ -52,7 +52,7 @@ impl RdClient {
 
     async fn execute_impl(
         &self,
-        fixed_bearer: Option<&str>,
+        fixed_bearer: Option<Arc<String>>,
         build: impl Fn(bool) -> reqwest::RequestBuilder,
     ) -> Result<Response, RdError> {
         let mut attempt: u32 = 0;
@@ -71,8 +71,8 @@ impl RdClient {
             }
 
             let creds = self.config.credentials.load();
-            let active_token: Arc<String> = if let Some(b) = fixed_bearer {
-                Arc::new(b.to_string())
+            let active_token: Arc<String> = if let Some(b) = &fixed_bearer {
+                b.clone()
             } else if let Some(pool) = &self.config.download_token_pool {
                 pool.download_bearer()
             } else {

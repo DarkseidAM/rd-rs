@@ -91,6 +91,11 @@ impl Cache {
     ) -> anyhow::Result<Arc<CacheItem>> {
         let key = Self::build_key(access_key, filename);
 
+        if let Some(item) = self.items.get(&key) {
+            item.open(); // Mark open while DashMap read lock is held
+            return Ok(Arc::clone(&*item));
+        }
+
         let item = match self.items.entry(key.clone()) {
             Entry::Occupied(o) => Arc::clone(o.get()),
             Entry::Vacant(v) => {

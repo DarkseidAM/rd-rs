@@ -156,8 +156,19 @@ async fn run_fuse_mount() -> Result<()> {
                     // watch channels hold only the latest value; one call picks up the
                     // most recent config and marks it as seen.
                     let updated = rx.borrow_and_update().clone();
+
+                    let old_cfg = config_clone.load();
+                    let tokens_changed = old_cfg.token != updated.token
+                        || old_cfg.download_tokens != updated.download_tokens;
+
                     rd_clone.reload_credentials(&updated);
-                    clear_unrestrict_cache_all(&unrestrict_cache_watch);
+                    if tokens_changed {
+                        tracing::info!(
+                            "RD API tokens changed during hot-reload; dropping unrestrict cache"
+                        );
+                        clear_unrestrict_cache_all(&unrestrict_cache_watch);
+                    }
+
                     config_clone.store(Arc::new(updated));
                 }
             });

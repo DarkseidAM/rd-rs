@@ -17,7 +17,7 @@ impl RealDebrid {
         let tokens = self.token_pool.tokens_in_order();
         let mut by_token = Vec::with_capacity(tokens.len());
         for token in tokens {
-            match self.fetch_traffic_details_token(token.as_str(), &url).await {
+            match self.fetch_traffic_details_token(token.clone(), &url).await {
                 Ok(details) => {
                     tracing::debug!(
                         days = details.len(),
@@ -40,7 +40,7 @@ impl RealDebrid {
 
     async fn fetch_traffic_details_token(
         &self,
-        token: &str,
+        token: Arc<String>,
         url: &str,
     ) -> Result<TrafficDetailsResponse> {
         let resp = self

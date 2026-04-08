@@ -23,12 +23,12 @@ pub const UNRESTRICT_CACHE_TTL: Duration = Duration::from_secs(4 * 3600);
 /// Multiple RD accounts must not share unrestricted rows; CDN Bearer may differ per account.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct UnrestrictCacheKey {
-    pub token: Arc<String>,
-    pub link: Arc<String>,
+    pub token: Arc<str>,
+    pub link: Arc<str>,
 }
 
 impl UnrestrictCacheKey {
-    pub fn new(token: impl Into<Arc<String>>, link: impl Into<Arc<String>>) -> Self {
+    pub fn new(token: impl Into<Arc<str>>, link: impl Into<Arc<str>>) -> Self {
         Self {
             token: token.into(),
             link: link.into(),
@@ -36,7 +36,7 @@ impl UnrestrictCacheKey {
     }
 
     pub fn from_strs(token: &str, link: &str) -> Self {
-        Self::new(Arc::new(token.to_string()), Arc::new(link.to_string()))
+        Self::new(token, link)
     }
 }
 
@@ -54,13 +54,7 @@ pub fn clear_unrestrict_cache(cache: &UnrestrictCache, token: &str, link: &str) 
 /// Remove every in-memory row for `link` (all token buckets). Use when the source link is bad
 /// and you do not know which Bearer was used to populate the cache.
 pub fn clear_unrestrict_cache_for_source_link(cache: &UnrestrictCache, link: &str) {
-    let keys: Vec<UnrestrictCacheKey> = cache
-        .iter()
-        .filter_map(|e| (e.key().link.as_str() == link).then(|| e.key().clone()))
-        .collect();
-    for k in keys {
-        cache.remove(&k);
-    }
+    cache.retain(|k, _| &*k.link != link);
 }
 
 /// Drop all unrestricted rows (e.g. after credential hot-reload).
@@ -73,16 +67,14 @@ pub fn clear_unrestrict_cache_all(cache: &UnrestrictCache) {
 /// Typically pass [`UNRESTRICT_CACHE_TTL`] so the map does not grow unbounded with stale rows.
 /// Returns how many entries were removed.
 pub fn sweep_unrestrict_cache_expired(cache: &UnrestrictCache, max_age: Duration) -> usize {
-    let stale_keys: Vec<UnrestrictCacheKey> = cache
-        .iter()
-        .filter_map(|e| {
-            let (_, at) = e.value();
-            (at.elapsed() >= max_age).then(|| e.key().clone())
-        })
-        .collect();
-    let n = stale_keys.len();
-    for k in stale_keys {
-        cache.remove(&k);
-    }
+    let mut n = 0;
+    cache.retain(|_, (_, at)| {
+        if at.elapsed() >= max_age {
+            n += 1;
+            false
+        } else {
+            true
+        }
+    });
     n
 }

@@ -18,7 +18,6 @@ impl RealDebrid {
         cache: &UnrestrictCache,
         link: &str,
     ) -> Result<Download, RdError> {
-        let link_arc = Arc::new(link.to_string());
         let mut form_body = format!("link={}", urlencoding_encode(link));
         if self.config.api.cdn_mode == crate::config::CdnMode::ForceLocation
             && let Some(loc) = self.config.api.cdn_location.as_deref()
@@ -45,7 +44,7 @@ impl RealDebrid {
                 }));
             };
 
-            let key = UnrestrictCacheKey::new(Arc::clone(&token), Arc::clone(&link_arc));
+            let key = UnrestrictCacheKey::from_strs(token.as_str(), link);
             if let Some(entry) = cache.get(&key) {
                 let (dl, cached_at) = entry.value();
                 if cached_at.elapsed() < UNRESTRICT_CACHE_TTL {
@@ -55,7 +54,7 @@ impl RealDebrid {
 
             let resp = match self
                 .unrestrict_client
-                .execute_with_fixed_bearer(token.as_str(), |_| {
+                .execute_with_fixed_bearer(Arc::clone(&token), |_| {
                     self.unrestrict_client
                         .client
                         .post(&url)
