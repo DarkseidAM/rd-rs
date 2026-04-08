@@ -34,6 +34,12 @@ pub(super) fn evict(cache: &Cache) {
 
     for key in &to_remove {
         if let Some((_, item)) = cache.items.remove(key) {
+            // Avoid removing entries that were concurrently acquired and opened after we built
+            // `to_remove` (open() happens in get_or_create()).
+            if item.is_open() {
+                cache.items.insert(key.clone(), item);
+                continue;
+            }
             item.flush_ranges(true);
         }
     }
