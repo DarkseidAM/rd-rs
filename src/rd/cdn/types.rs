@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 
 pub const SERVER_LIST_URL: &str =
     "https://nzimhzbfnannoxumremm.supabase.co/storage/v1/object/public/public-files/servers.txt";
-pub const RESULTS_FILE: &str = "data/network_test_results.json";
-pub const TIMESTAMP_FILE: &str = "data/network_test_timestamp";
 pub const CACHE_TTL_SECS: u64 = 24 * 3600;
 pub const MAX_CONCURRENT: usize = 8;
 pub const DNS_PROBE_INITIAL_CEILING: u32 = 100;

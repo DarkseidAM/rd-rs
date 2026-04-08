@@ -86,13 +86,16 @@ impl DownloadError {
     }
 
     /// True when a fresh unrestricted CDN URL may fix the failure.
+    ///
+    /// `FileUnavailable` is intentionally excluded: zurg treats it as non-retryable and fatal
+    /// (`DownloadErrorResponse` in retry.go:101-104). The FUSE layer calls
+    /// `mark_file_broken` + `enqueue_repair` instead of attempting CDN heal.
     pub fn should_refresh_via_unrestrict(&self) -> bool {
         matches!(
             self,
             Self::InvalidDownloadCode
                 | Self::FailedGeneration
                 | Self::TooManyAttempts
-                | Self::FileUnavailable
                 | Self::LinkUnavailable { .. }
         )
     }

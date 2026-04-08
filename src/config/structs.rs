@@ -154,6 +154,17 @@ pub struct ApiConfig {
     /// Poll `GET /traffic/details` for every download token this often (seconds). Default 300 (5m, zurg-style). 0 = disabled.
     #[serde(default = "defaults::default_traffic_details_refresh_secs")]
     pub traffic_details_refresh_secs: u64,
+
+    /// Include IPv6 CDN hosts when ranking the fastest download server.
+    /// When `true` (default), ipv4 + ipv6 latency results are merged before selecting the
+    /// fastest host. When `false`, only IPv4 hosts are considered.
+    #[serde(default = "defaults::bool_true")]
+    pub cdn_ipv6_enabled: bool,
+
+    /// Force all CDN downloads over IPv6, discarding IPv4 hosts entirely.
+    /// Only meaningful when `cdn_ipv6_enabled = true`. Default: `false`.
+    #[serde(default)]
+    pub cdn_force_ipv6: bool,
 }
 
 impl Default for ApiConfig {
@@ -175,6 +186,8 @@ impl Default for ApiConfig {
             bandwidth_reset_timezone: defaults::default_bandwidth_reset_timezone(),
             unrestrict_cache_sweep_interval_mins: 60,
             traffic_details_refresh_secs: 300,
+            cdn_ipv6_enabled: true,
+            cdn_force_ipv6: false,
         }
     }
 }
@@ -195,12 +208,22 @@ pub enum CdnMode {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct VfsConfig {
+    /// Maximum total size of the chunk cache on disk.
+    ///
+    /// **NOTE: requires a process restart** — the eviction loop reads this once at
+    /// `Cache::new` time and does not pick up hot-reloads.
     #[serde(default = "defaults::default_cache_max_size")]
     pub cache_max_size: String,
 
+    /// Maximum age of a cached chunk before it is evicted.
+    ///
+    /// **NOTE: requires a process restart** (same as `cache_max_size`).
     #[serde(default = "defaults::default_cache_max_age")]
     pub cache_max_age: String,
 
+    /// Minimum free space to keep on the cache partition; eviction runs when this threshold is breached.
+    ///
+    /// **NOTE: requires a process restart** (same as `cache_max_size`).
     #[serde(default = "defaults::default_cache_min_free")]
     pub cache_min_free_space: String,
 

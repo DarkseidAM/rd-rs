@@ -87,7 +87,7 @@ async fn run_repair_cli(args: RepairCli) -> Result<()> {
     let config = Arc::new(ArcSwap::from_pointee(cfg.clone()));
     let rd_client = rd_rs::rd::RealDebrid::new(&cfg)?;
     rd_rs::rd::cdn::run_network_test(&rd_client, &cfg).await;
-    if let Some(pin) = rd_rs::rd::cdn::RankedHosts::try_load() {
+    if let Some(pin) = rd_rs::rd::cdn::RankedHosts::try_load(&cfg.api) {
         rd_client.ranked_hosts.store(Some(pin));
     }
     let rd_client = Arc::new(rd_client);
@@ -136,7 +136,7 @@ async fn run_fuse_mount() -> Result<()> {
     let rd_client = rd_rs::rd::RealDebrid::new(&cfg)?;
     tracing::info!("RealDebrid clients ready");
     rd_rs::rd::cdn::run_network_test(&rd_client, &cfg).await;
-    if let Some(pin) = rd_rs::rd::cdn::RankedHosts::try_load() {
+    if let Some(pin) = rd_rs::rd::cdn::RankedHosts::try_load(&cfg.api) {
         rd_client.ranked_hosts.store(Some(pin));
     }
     let rd_client = Arc::new(rd_client);
@@ -213,7 +213,7 @@ async fn run_fuse_mount() -> Result<()> {
                     }
                 };
                 rd_rs::rd::cdn::rerun_cdn_network_test().await;
-                match rd_rs::rd::cdn::RankedHosts::try_load() {
+                match rd_rs::rd::cdn::RankedHosts::try_load(&config_probe.load().api) {
                     Some(pin) => {
                         rd_probe.ranked_hosts.store(Some(pin));
                         tracing::info!("CDN: re-probe updated pinned host in memory");
@@ -229,13 +229,26 @@ async fn run_fuse_mount() -> Result<()> {
     {
         let rd_bw = rd_client.clone();
         let config_bw = config.clone();
+        let cache_dir_bw = config_bw.load().cache_dir.clone();
         tokio::spawn(async move {
             loop {
-                let tz = config_bw.load().api.bandwidth_reset_timezone.clone();
+                let cfg = config_bw.load();
+                let tz = cfg.api.bandwidth_reset_timezone.clone();
+                drop(cfg);
+
+                // Startup catchup: if the process was offline at midnight, reset immediately.
+                if rd_rs::rd::bandwidth_reset::startup_reset_needed(&cache_dir_bw, &tz) {
+                    tracing::info!(
+                        "bandwidth: missed daily reset detected — clearing exhausted tokens now"
+                    );
+                    rd_bw.token_pool.clear_all_exhausted();
+                    rd_rs::rd::bandwidth_reset::stamp_reset(&cache_dir_bw, &tz);
+                }
+
                 let sleep_dur = rd_rs::rd::bandwidth_reset::duration_until_timezone_midnight(&tz);
-                // TODO: if the server is offline or suspended exactly during local midnight, they may skip resetting the tokens for that 24h block until a hot reboot.
                 tokio::time::sleep(sleep_dur).await;
                 rd_bw.token_pool.clear_all_exhausted();
+                rd_rs::rd::bandwidth_reset::stamp_reset(&cache_dir_bw, &tz);
             }
         });
     }

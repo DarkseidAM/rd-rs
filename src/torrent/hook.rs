@@ -19,26 +19,18 @@ use arc_swap::ArcSwap;
 const DEBOUNCE_WAIT: Duration = Duration::from_millis(500);
 
 pub struct HookWorker {
-    pub receiver: mpsc::Receiver<Vec<String>>,
+    pub receiver: mpsc::UnboundedReceiver<Vec<String>>,
     pub config: Arc<ArcSwap<Config>>,
     pub shutdown: CancellationToken,
 }
 
 impl HookWorker {
     /// Spawns the debounced webhook processing loop.
+    /// The worker always starts, even if the command is currently empty, so that
+    /// a hot-reload that adds a command is picked up without a process restart.
     pub fn spawn(mut self) {
-        let command_template = self.config.load().on_library_update.command.clone();
-        if command_template.is_empty() {
-            // Disabled
-            return;
-        }
-
         tokio::spawn(async move {
-            tracing::info!(
-                "HookWorker started: command='{}' debounce={:?}",
-                command_template,
-                DEBOUNCE_WAIT
-            );
+            tracing::info!("HookWorker started: debounce={:?}", DEBOUNCE_WAIT);
 
             // One simultaneous hook execution at a time to prevent thundering herd.
             let limiter = Arc::new(Semaphore::new(1));
@@ -98,11 +90,13 @@ impl HookWorker {
 }
 
 async fn execute_hook(command_template: &str, paths: Vec<String>) {
+    if command_template.is_empty() {
+        return;
+    }
     // Mirror zurg: if no %s is provided, we just run the command once.
     // If %s is provided, we run the command once PER path.
     if !command_template.contains("%s") {
-        // TODO: change log level to info
-        tracing::debug!("Executing on_library_update: {}", command_template);
+        tracing::info!("Executing on_library_update: {}", command_template);
         if let Err(e) = launch_shell(command_template).await {
             tracing::warn!("on_library_update failed: {}", e);
         }
@@ -111,7 +105,7 @@ async fn execute_hook(command_template: &str, paths: Vec<String>) {
 
     for path in paths {
         let cmd = command_template.replace("%s", &path);
-        tracing::debug!("Executing on_library_update: {}", cmd);
+        tracing::info!("Executing on_library_update: {}", cmd);
         if let Err(e) = launch_shell(&cmd).await {
             tracing::warn!("on_library_update failed for {}: {}", path, e);
         }

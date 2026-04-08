@@ -101,7 +101,13 @@ pub(crate) async fn read_at(
                         }
                     }
                 } else {
-                    notified.await;
+                    // We own this worker — cap the wait at 1 s so a stalled CDN chunk
+                    // between the 1 s watchdog polls does not hang the FUSE read indefinitely.
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        notified,
+                    )
+                    .await;
                 }
 
                 if item.has_range(offset, end) {
