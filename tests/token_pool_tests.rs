@@ -103,7 +103,10 @@ fn update_tokens_replaces_pool() {
     let pool = TokenPool::new(vec!["old_token".to_string()]);
     assert_eq!(&*pool.current(), "old_token");
 
-    pool.update_tokens(vec!["new_primary".to_string(), "new_extra".to_string()]);
+    pool.update_tokens(vec![
+        std::sync::Arc::from("new_primary"),
+        std::sync::Arc::from("new_extra"),
+    ]);
     // After update, index resets to 0 → primary is active.
     assert_eq!(&*pool.current(), "new_primary");
     assert_eq!(pool.len(), 2);

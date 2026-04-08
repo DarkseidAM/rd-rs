@@ -173,7 +173,7 @@ impl RealDebrid {
             download_tokens: arc_tokens.clone(),
         };
         self.credentials.store(Arc::new(new_creds));
-        self.token_pool.update_tokens(new_cfg.all_download_tokens());
+        self.token_pool.update_tokens(arc_tokens);
         tracing::info!("RD credentials hot-reloaded (token rotated, pool refreshed)");
     }
 }

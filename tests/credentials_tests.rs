@@ -53,7 +53,7 @@ fn token_pool_update_syncs_with_credentials() {
     assert_eq!(&*pool.current(), "dl_v1");
 
     // Simulate the pool portion of reload_credentials().
-    pool.update_tokens(vec!["dl_v2".to_string(), "dl_v2_extra".to_string()]);
+    pool.update_tokens(vec![Arc::from("dl_v2"), Arc::from("dl_v2_extra")]);
 
     // Pool immediately reflects new tokens.
     assert_eq!(&*pool.current(), "dl_v2");

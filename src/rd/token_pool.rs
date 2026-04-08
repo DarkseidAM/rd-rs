@@ -141,7 +141,7 @@ impl TokenPool {
     }
 
     /// Atomically replaces the token list and resets exhaustion flags.
-    pub fn update_tokens(&self, new_tokens: Vec<String>) {
+    pub fn update_tokens(&self, new_tokens: Vec<Arc<str>>) {
         assert!(
             !new_tokens.is_empty(),
             "TokenPool requires at least one token"
@@ -149,9 +149,8 @@ impl TokenPool {
         let ex: Vec<AtomicBool> = (0..new_tokens.len())
             .map(|_| AtomicBool::new(false))
             .collect();
-        let v: Vec<Arc<str>> = new_tokens.into_iter().map(Arc::from).collect();
         self.state.store(Arc::new(TokenPoolState {
-            tokens: v,
+            tokens: new_tokens,
             exhausted: ex,
         }));
         self.current.store(0, Ordering::Relaxed);
