@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rd_rs::rd::api::{
-    UnrestrictCacheKey, clear_unrestrict_cache, clear_unrestrict_cache_all, new_unrestrict_cache,
+    UnrestrictCacheKey, clear_unrestrict_cache, clear_unrestrict_cache_all,
+    clear_unrestrict_cache_for_source_link, new_unrestrict_cache, sweep_unrestrict_cache_expired,
 };
 use rd_rs::rd::types::Download;
 use tokio::time::Instant;
@@ -32,6 +33,23 @@ fn cache_key_token_and_link_independent() {
         k1,
         UnrestrictCacheKey::from_strs("token_a", "https://link1")
     );
+}
+
+#[test]
+fn clear_for_source_link_removes_all_token_buckets() {
+    let cache = new_unrestrict_cache();
+    let link = "https://real-debrid.com/d/shared";
+    cache.insert(
+        UnrestrictCacheKey::from_strs("token_a", link),
+        (sample_download("token_a"), Instant::now()),
+    );
+    cache.insert(
+        UnrestrictCacheKey::from_strs("token_b", link),
+        (sample_download("token_b"), Instant::now()),
+    );
+    assert_eq!(cache.len(), 2);
+    clear_unrestrict_cache_for_source_link(&cache, link);
+    assert!(cache.is_empty());
 }
 
 #[test]
@@ -73,6 +91,26 @@ fn clear_all_empties_cache() {
     );
     clear_unrestrict_cache_all(&cache);
     assert!(cache.is_empty());
+}
+
+#[test]
+fn sweep_removes_entries_older_than_max_age() {
+    let cache = new_unrestrict_cache();
+    let fresh_key = UnrestrictCacheKey::from_strs("t1", "https://fresh");
+    let stale_key = UnrestrictCacheKey::from_strs("t1", "https://stale");
+    cache.insert(fresh_key.clone(), (sample_download("t1"), Instant::now()));
+    cache.insert(
+        stale_key.clone(),
+        (
+            sample_download("t1"),
+            Instant::now() - Duration::from_secs(100),
+        ),
+    );
+    let removed = sweep_unrestrict_cache_expired(&cache, Duration::from_secs(50));
+    assert_eq!(removed, 1);
+    assert_eq!(cache.len(), 1);
+    assert!(cache.get(&fresh_key).is_some());
+    assert!(cache.get(&stale_key).is_none());
 }
 
 #[test]

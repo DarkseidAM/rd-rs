@@ -137,6 +137,10 @@ pub struct ApiConfig {
     /// IANA timezone for scheduling daily clear of per-token bandwidth exhaustion flags (aligns with RD daily window, e.g. CET).
     #[serde(default = "defaults::default_bandwidth_reset_timezone")]
     pub bandwidth_reset_timezone: String,
+
+    /// How often to drop in-memory unrestrict cache entries past the 4h TTL. 0 = disabled.
+    #[serde(default = "defaults::default_unrestrict_cache_sweep_interval_mins")]
+    pub unrestrict_cache_sweep_interval_mins: u64,
 }
 
 impl Default for ApiConfig {
@@ -154,6 +158,7 @@ impl Default for ApiConfig {
             cdn_reprobe_interval_mins: 0,
             download_read_timeout_secs: 300,
             bandwidth_reset_timezone: defaults::default_bandwidth_reset_timezone(),
+            unrestrict_cache_sweep_interval_mins: 60,
         }
     }
 }

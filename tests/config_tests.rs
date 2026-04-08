@@ -12,6 +12,7 @@ fn parse_minimal_toml() {
     assert_eq!(cfg.api.cdn_reprobe_interval_mins, 0);
     assert_eq!(cfg.api.download_read_timeout_secs, 300);
     assert_eq!(cfg.api.bandwidth_reset_timezone, "Europe/Paris");
+    assert_eq!(cfg.api.unrestrict_cache_sweep_interval_mins, 60);
     assert_eq!(cfg.repair.every_mins, 60);
     assert_eq!(cfg.vfs.chunk_size, "4M");
 }

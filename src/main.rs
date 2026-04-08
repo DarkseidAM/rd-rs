@@ -9,7 +9,10 @@ use fuse3::raw::Session;
 use rd_rs::config::Config;
 use rd_rs::db::Db;
 use rd_rs::fuse::RdFs;
-use rd_rs::rd::api::{clear_unrestrict_cache_all, new_unrestrict_cache};
+use rd_rs::rd::api::{
+    UNRESTRICT_CACHE_TTL, clear_unrestrict_cache_all, new_unrestrict_cache,
+    sweep_unrestrict_cache_expired,
+};
 use rd_rs::torrent::{EnqueueRepairAllOptions, TorrentManager};
 
 struct LocalTimer;
@@ -139,6 +142,7 @@ async fn run_fuse_mount() -> Result<()> {
     let rd_client = Arc::new(rd_client);
     let unrestrict_cache = new_unrestrict_cache();
     let unrestrict_cache_watch = unrestrict_cache.clone();
+    let unrestrict_cache_sweep = unrestrict_cache.clone();
 
     let _config_watcher = match Config::watch("config.toml") {
         Ok((mut rx, watcher)) => {
@@ -231,6 +235,25 @@ async fn run_fuse_mount() -> Result<()> {
                 let sleep_dur = rd_rs::rd::bandwidth_reset::duration_until_timezone_midnight(&tz);
                 tokio::time::sleep(sleep_dur).await;
                 rd_bw.token_pool.clear_all_exhausted();
+            }
+        });
+    }
+
+    {
+        let cache_sweep = unrestrict_cache_sweep;
+        let config_sweep = config.clone();
+        tokio::spawn(async move {
+            loop {
+                let mins = config_sweep.load().api.unrestrict_cache_sweep_interval_mins;
+                if mins == 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    continue;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(mins.saturating_mul(60))).await;
+                let removed = sweep_unrestrict_cache_expired(&cache_sweep, UNRESTRICT_CACHE_TTL);
+                if removed > 0 {
+                    tracing::info!(removed, "unrestrict cache sweep dropped stale entries");
+                }
             }
         });
     }
