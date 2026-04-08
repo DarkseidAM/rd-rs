@@ -41,10 +41,7 @@ async fn link_heal_clears_all_token_buckets_for_source_link() {
 
     // Pre-seed cache in two token buckets to simulate multi-token stale entries.
     cache.insert(
-        UnrestrictCacheKey::new(
-            Arc::new("T0".to_string()),
-            Arc::new(source_link.to_string()),
-        ),
+        UnrestrictCacheKey::from_strs("T0", source_link),
         (
             rd_rs::rd::types::Download {
                 download: "https://old0/d/X".into(),
@@ -55,10 +52,7 @@ async fn link_heal_clears_all_token_buckets_for_source_link() {
         ),
     );
     cache.insert(
-        UnrestrictCacheKey::new(
-            Arc::new("T1".to_string()),
-            Arc::new(source_link.to_string()),
-        ),
+        UnrestrictCacheKey::from_strs("T1", source_link),
         (
             rd_rs::rd::types::Download {
                 download: "https://old1/d/X".into(),

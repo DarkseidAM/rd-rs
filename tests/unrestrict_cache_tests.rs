@@ -1,6 +1,5 @@
 //! Unrestrict cache: per-token partition so multiple RD accounts cannot cross-pollute.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use rd_rs::rd::api::{
@@ -86,7 +85,7 @@ fn clear_removes_only_matching_token_bucket() {
 fn clear_all_empties_cache() {
     let cache = new_unrestrict_cache();
     cache.insert(
-        UnrestrictCacheKey::new(Arc::new("t".into()), Arc::new("l".into())),
+        UnrestrictCacheKey::from_strs("t", "l"),
         (sample_download("t"), Instant::now()),
     );
     clear_unrestrict_cache_all(&cache);

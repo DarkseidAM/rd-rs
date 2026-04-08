@@ -225,7 +225,7 @@ pub type TrafficDetailsResponse = std::collections::HashMap<String, TrafficDetai
 #[derive(Debug, Clone)]
 pub struct TrafficDetailsSnapshot {
     pub fetched_at: DateTime<Utc>,
-    pub by_token: Vec<(Arc<String>, TrafficDetailsResponse)>,
+    pub by_token: Vec<(Arc<str>, TrafficDetailsResponse)>,
 }
 
 // ─── Downloads ────────────────────────────────────────────────────────────────
