@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use crate::rd::RealDebrid;
 use crate::rd::api::helpers::{extract_base_download_url, urlencoding_encode};
 use crate::rd::api::{UNRESTRICT_CACHE_TTL, UnrestrictCache, UnrestrictCacheKey};
-use crate::rd::client::RdError;
+use crate::rd::client::{ApiError, RdError};
 use crate::rd::types::*;
 use tokio::time::Instant;
 
@@ -18,40 +18,60 @@ impl RealDebrid {
         cache: &UnrestrictCache,
         link: &str,
     ) -> Result<Download, RdError> {
-        let token = self.credentials.load().token.clone();
-        let key = UnrestrictCacheKey::new(Arc::clone(&token), Arc::new(link.to_string()));
-
-        if let Some(entry) = cache.get(&key) {
-            let (dl, cached_at) = entry.value();
-            if cached_at.elapsed() < UNRESTRICT_CACHE_TTL {
-                return Ok(dl.clone());
-            }
-        }
-
+        let link_arc = Arc::new(link.to_string());
         let form_body = format!("link={}", urlencoding_encode(link));
         let url = format!(
             "{}/rest/1.0/unrestrict/link",
             self.config.api.base_url.trim_end_matches('/')
         );
-        let resp = self
-            .unrestrict_client
-            .execute(|_| {
-                self.unrestrict_client
-                    .client
-                    .post(&url)
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .body(form_body.clone())
-            })
-            .await?;
 
-        let mut download: Download = resp.json().await.map_err(RdError::Network)?;
-        download.generated_at = Some(chrono::Utc::now());
-        download.token = (*token).clone();
+        let mut last_bandwidth: Option<RdError> = None;
 
-        download.download = extract_base_download_url(&download.download);
-        cache.insert(key, (download.clone(), Instant::now()));
+        loop {
+            let eligible = self.token_pool.eligible_tokens_in_order();
+            let Some(token) = eligible.first().cloned() else {
+                return Err(last_bandwidth.unwrap_or_else(|| {
+                    RdError::Api(ApiError::TrafficExhausted {
+                        message: "all RD tokens are bandwidth-exhausted for unrestrict".into(),
+                    })
+                }));
+            };
 
-        Ok(download)
+            let key = UnrestrictCacheKey::new(Arc::clone(&token), Arc::clone(&link_arc));
+            if let Some(entry) = cache.get(&key) {
+                let (dl, cached_at) = entry.value();
+                if cached_at.elapsed() < UNRESTRICT_CACHE_TTL {
+                    return Ok(dl.clone());
+                }
+            }
+
+            let resp = match self
+                .unrestrict_client
+                .execute_with_fixed_bearer(token.as_str(), |_| {
+                    self.unrestrict_client
+                        .client
+                        .post(&url)
+                        .header("Content-Type", "application/x-www-form-urlencoded")
+                        .body(form_body.clone())
+                })
+                .await
+            {
+                Ok(r) => r,
+                Err(e) if e.is_bandwidth_limited() => {
+                    self.token_pool.mark_exhausted(token.as_str());
+                    last_bandwidth = Some(e);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
+            let mut download: Download = resp.json().await.map_err(RdError::Network)?;
+            download.generated_at = Some(chrono::Utc::now());
+            download.token = (*token).clone();
+            download.download = extract_base_download_url(&download.download);
+            cache.insert(key, (download.clone(), Instant::now()));
+            return Ok(download);
+        }
     }
 
     pub async fn select_torrent_files(&self, id: &str, files: &str) -> Result<(), RdError> {

@@ -37,14 +37,32 @@ impl RdClient {
         &self,
         build: impl Fn(bool) -> reqwest::RequestBuilder,
     ) -> Result<Response, RdError> {
+        self.execute_impl(None, build).await
+    }
+
+    /// Like [`Self::execute`], but always sends the given Bearer (for `POST /unrestrict/link`
+    /// when trying alternate pool tokens). Ignores the download token pool rotation index.
+    pub async fn execute_with_fixed_bearer(
+        &self,
+        bearer: &str,
+        build: impl Fn(bool) -> reqwest::RequestBuilder,
+    ) -> Result<Response, RdError> {
+        self.execute_impl(Some(bearer), build).await
+    }
+
+    async fn execute_impl(
+        &self,
+        fixed_bearer: Option<&str>,
+        build: impl Fn(bool) -> reqwest::RequestBuilder,
+    ) -> Result<Response, RdError> {
         let mut attempt: u32 = 0;
-        let max_rotations = self
+        let max_token_attempts = self
             .config
             .download_token_pool
             .as_ref()
-            .map(|p| p.len().saturating_sub(1))
-            .unwrap_or(0);
-        let mut rotations: usize = 0;
+            .map(|p| p.len())
+            .unwrap_or(1);
+        let mut token_attempts: usize = 0;
         let mut use_fallback = false;
 
         loop {
@@ -52,14 +70,14 @@ impl RdClient {
                 rl.wait().await;
             }
 
-            // Load credentials atomically on every iteration — zero-cost ArcSwap read.
             let creds = self.config.credentials.load();
-            let active_token = self
-                .config
-                .download_token_pool
-                .as_ref()
-                .map(|p| p.current())
-                .unwrap_or_else(|| creds.token.clone());
+            let active_token: Arc<String> = if let Some(b) = fixed_bearer {
+                Arc::new(b.to_string())
+            } else if let Some(pool) = &self.config.download_token_pool {
+                pool.download_bearer()
+            } else {
+                creds.token.clone()
+            };
 
             let req = build(use_fallback).bearer_auth(active_token.as_str());
 
@@ -91,7 +109,7 @@ impl RdClient {
 
             let status = resp.status();
 
-            if self.config.is_download_client && !status.is_success() {
+            if self.config.is_download_client && fixed_bearer.is_none() && !status.is_success() {
                 let x_err = resp
                     .headers()
                     .get("X-Error")
@@ -101,20 +119,20 @@ impl RdClient {
                 let dl_err = DownloadError::from_header(&x_err, status.as_u16());
                 let rd_err = RdError::Download(dl_err);
 
-                // On bandwidth limit: rotate to next token and retry (if pool has extras).
                 if rd_err.is_bandwidth_limited()
                     && let Some(pool) = &self.config.download_token_pool
-                    && rotations < max_rotations
-                    && pool.rotate()
                 {
-                    rotations += 1;
-                    tracing::warn!(
-                        rotation = rotations,
-                        max_rotations,
-                        "Download bandwidth limit hit — rotating to next token"
-                    );
-                    attempt = 0;
-                    continue;
+                    pool.mark_exhausted(active_token.as_str());
+                    token_attempts += 1;
+                    if token_attempts < max_token_attempts && pool.any_non_exhausted() {
+                        tracing::warn!(
+                            attempt = token_attempts,
+                            max_token_attempts,
+                            "Download bandwidth limit — trying next eligible token"
+                        );
+                        attempt = 0;
+                        continue;
+                    }
                 }
                 return Err(rd_err);
             }
@@ -140,6 +158,9 @@ impl RdClient {
                 let body = resp.bytes().await.map_err(RdError::Network)?;
                 if let Ok(err_body) = serde_json::from_slice::<ApiErrBody>(&body) {
                     let api_err = ApiError::from_code(err_body.code, err_body.error);
+                    if api_err.is_bandwidth_limited() {
+                        return Err(RdError::Api(api_err));
+                    }
                     if api_err.should_retry() {
                         let delay = backoff(attempt, 1);
                         tracing::warn!(

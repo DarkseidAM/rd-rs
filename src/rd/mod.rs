@@ -4,6 +4,7 @@
 //! and re-exports all types.
 
 pub mod api;
+pub mod bandwidth_reset;
 pub mod cdn;
 pub mod client;
 pub mod token_pool;

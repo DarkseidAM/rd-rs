@@ -222,6 +222,19 @@ async fn run_fuse_mount() -> Result<()> {
         });
     }
 
+    {
+        let rd_bw = rd_client.clone();
+        let config_bw = config.clone();
+        tokio::spawn(async move {
+            loop {
+                let tz = config_bw.load().api.bandwidth_reset_timezone.clone();
+                let sleep_dur = rd_rs::rd::bandwidth_reset::duration_until_timezone_midnight(&tz);
+                tokio::time::sleep(sleep_dur).await;
+                rd_bw.token_pool.clear_all_exhausted();
+            }
+        });
+    }
+
     let mut mount_options = fuse3::MountOptions::default();
     mount_options
         .allow_other(true)
