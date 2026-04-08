@@ -6,15 +6,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::rd::RealDebrid;
-use crate::rd::api::{UnrestrictCache, clear_unrestrict_cache};
+use crate::rd::api::{UnrestrictCache, clear_unrestrict_cache_for_source_link};
 use crate::rd::client::RdError;
 
 /// Max automatic unrestrict refreshes per downloader session (shared across chunk workers).
-pub(crate) const MAX_SESSION_LINK_HEALS: u32 = 3;
+pub const MAX_SESSION_LINK_HEALS: u32 = 3;
 
 /// If `err` warrants it and budget remains, clear unrestrict cache, call unrestrict, update `live_url`.
 /// Returns `true` when the caller should retry the HTTP Range GET without counting a normal retry.
-pub(crate) async fn attempt_cdn_link_refresh(
+pub async fn attempt_cdn_link_refresh(
     err: &RdError,
     rd: &Arc<RealDebrid>,
     cache: &UnrestrictCache,
@@ -57,7 +57,10 @@ async fn refresh_cdn_url(
     source_link: &str,
     live_url: &RwLock<String>,
 ) -> Result<(), RdError> {
-    clear_unrestrict_cache(cache, rd.credentials.load().token.as_str(), source_link);
+    // When healing an expired CDN URL, drop *all* token buckets for this source link.
+    // The next unrestrict may use a different eligible token, and we must not reuse stale URLs
+    // from other accounts.
+    clear_unrestrict_cache_for_source_link(cache, source_link);
     let download = rd.unrestrict_link(cache, source_link).await?;
     *live_url.write().await = download.download;
     Ok(())
