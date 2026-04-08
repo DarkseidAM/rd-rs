@@ -44,7 +44,7 @@ impl RealDebrid {
                 }));
             };
 
-            let key = UnrestrictCacheKey::from_strs(token.as_str(), link);
+            let key = UnrestrictCacheKey::new(Arc::clone(&token), link);
             if let Some(entry) = cache.get(&key) {
                 let (dl, cached_at) = entry.value();
                 if cached_at.elapsed() < UNRESTRICT_CACHE_TTL {
@@ -65,7 +65,7 @@ impl RealDebrid {
             {
                 Ok(r) => r,
                 Err(e) if e.is_bandwidth_limited() => {
-                    self.token_pool.mark_exhausted(token.as_str());
+                    self.token_pool.mark_exhausted(&*token);
                     last_bandwidth = Some(e);
                     continue;
                 }
@@ -74,7 +74,7 @@ impl RealDebrid {
 
             let mut download: Download = resp.json().await.map_err(RdError::Network)?;
             download.generated_at = Some(chrono::Utc::now());
-            download.token = (*token).clone();
+            download.token = token.to_string();
             download.download = extract_base_download_url(&download.download);
             cache.insert(key, (download.clone(), Instant::now()));
             return Ok(download);

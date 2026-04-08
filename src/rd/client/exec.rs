@@ -44,7 +44,7 @@ impl RdClient {
     /// when trying alternate pool tokens). Ignores the download token pool rotation index.
     pub async fn execute_with_fixed_bearer(
         &self,
-        bearer: Arc<String>,
+        bearer: Arc<str>,
         build: impl Fn(bool) -> reqwest::RequestBuilder,
     ) -> Result<Response, RdError> {
         self.execute_impl(Some(bearer), build).await
@@ -52,7 +52,7 @@ impl RdClient {
 
     async fn execute_impl(
         &self,
-        fixed_bearer: Option<Arc<String>>,
+        fixed_bearer: Option<Arc<str>>,
         build: impl Fn(bool) -> reqwest::RequestBuilder,
     ) -> Result<Response, RdError> {
         let mut attempt: u32 = 0;
@@ -71,7 +71,7 @@ impl RdClient {
             }
 
             let creds = self.config.credentials.load();
-            let active_token: Arc<String> = if let Some(b) = &fixed_bearer {
+            let active_token: Arc<str> = if let Some(b) = &fixed_bearer {
                 b.clone()
             } else if let Some(pool) = &self.config.download_token_pool {
                 pool.download_bearer()
@@ -79,7 +79,7 @@ impl RdClient {
                 creds.token.clone()
             };
 
-            let req = build(use_fallback).bearer_auth(active_token.as_str());
+            let req = build(use_fallback).bearer_auth(&*active_token);
 
             let resp = match req.send().await {
                 Ok(r) => r,
@@ -122,7 +122,7 @@ impl RdClient {
                 if rd_err.is_bandwidth_limited()
                     && let Some(pool) = &self.config.download_token_pool
                 {
-                    pool.mark_exhausted(active_token.as_str());
+                    pool.mark_exhausted(&*active_token);
                     token_attempts += 1;
                     if token_attempts < max_token_attempts && pool.any_non_exhausted() {
                         tracing::warn!(

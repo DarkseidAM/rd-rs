@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use arc_swap::ArcSwap;
 
 struct TokenPoolState {
-    tokens: Vec<Arc<String>>,
+    tokens: Vec<Arc<str>>,
     exhausted: Vec<AtomicBool>,
 }
 
@@ -17,7 +17,7 @@ struct TokenPoolState {
 /// so [`Self::download_bearer`] and unrestrict token selection skip it until
 /// [`Self::clear_all_exhausted`] (e.g. daily CET reset).
 ///
-/// Tokens are stored as `Arc<String>` so `current()` only does a reference-count
+/// Tokens are stored as `Arc<str>` so `current()` only does a reference-count
 /// increment. The state is stored in an [`ArcSwap`] so it can be replaced
 /// atomically via [`Self::update_tokens`] during config hot-reload.
 pub struct TokenPool {
@@ -29,7 +29,7 @@ impl TokenPool {
     /// Create a new pool. Panics if `tokens` is empty.
     pub fn new(tokens: Vec<String>) -> Self {
         assert!(!tokens.is_empty(), "TokenPool requires at least one token");
-        let v: Vec<Arc<String>> = tokens.into_iter().map(Arc::new).collect();
+        let v: Vec<Arc<str>> = tokens.into_iter().map(Arc::from).collect();
         let ex: Vec<AtomicBool> = (0..v.len()).map(|_| AtomicBool::new(false)).collect();
         Self {
             state: ArcSwap::from_pointee(TokenPoolState {
@@ -41,7 +41,7 @@ impl TokenPool {
     }
 
     /// Returns the token at the current rotation index (tests / explicit [`Self::rotate`]).
-    pub fn current(&self) -> Arc<String> {
+    pub fn current(&self) -> Arc<str> {
         let state = self.state.load();
         let t = &state.tokens;
         let idx = self.current.load(Ordering::Relaxed) % t.len();
@@ -50,7 +50,7 @@ impl TokenPool {
 
     /// Picks a Bearer for CDN downloads: first non-exhausted token starting from the
     /// current index; updates the stored index when skipping exhausted slots.
-    pub fn download_bearer(&self) -> Arc<String> {
+    pub fn download_bearer(&self) -> Arc<str> {
         let state = self.state.load();
         let t = &state.tokens;
         let e = &state.exhausted;
@@ -70,12 +70,12 @@ impl TokenPool {
     }
 
     /// Tokens in config order (primary first, then extras).
-    pub fn tokens_in_order(&self) -> Vec<Arc<String>> {
+    pub fn tokens_in_order(&self) -> Vec<Arc<str>> {
         self.state.load().tokens.clone()
     }
 
     /// Ordered list of tokens not marked exhausted (may be empty).
-    pub fn eligible_tokens_in_order(&self) -> Vec<Arc<String>> {
+    pub fn eligible_tokens_in_order(&self) -> Vec<Arc<str>> {
         let state = self.state.load();
         state
             .tokens
@@ -92,7 +92,7 @@ impl TokenPool {
             .tokens
             .iter()
             .enumerate()
-            .find(|(_, tok)| tok.as_str() == token)
+            .find(|(_, tok)| tok.as_ref() == token)
         {
             state.exhausted[i].load(Ordering::Acquire)
         } else {
@@ -103,7 +103,7 @@ impl TokenPool {
     pub fn mark_exhausted(&self, token: &str) {
         let state = self.state.load();
         for (i, tok) in state.tokens.iter().enumerate() {
-            if tok.as_str() == token {
+            if tok.as_ref() == token {
                 state.exhausted[i].store(true, Ordering::Release);
                 tracing::info!(token = %token, "RD token marked bandwidth-exhausted");
                 return;
@@ -141,7 +141,7 @@ impl TokenPool {
     }
 
     /// Atomically replaces the token list and resets exhaustion flags.
-    pub fn update_tokens(&self, new_tokens: Vec<Arc<String>>) {
+    pub fn update_tokens(&self, new_tokens: Vec<String>) {
         assert!(
             !new_tokens.is_empty(),
             "TokenPool requires at least one token"
@@ -149,8 +149,9 @@ impl TokenPool {
         let ex: Vec<AtomicBool> = (0..new_tokens.len())
             .map(|_| AtomicBool::new(false))
             .collect();
+        let v: Vec<Arc<str>> = new_tokens.into_iter().map(Arc::from).collect();
         self.state.store(Arc::new(TokenPoolState {
-            tokens: new_tokens,
+            tokens: v,
             exhausted: ex,
         }));
         self.current.store(0, Ordering::Relaxed);

@@ -40,7 +40,7 @@ impl RealDebrid {
 
     async fn fetch_traffic_details_token(
         &self,
-        token: Arc<String>,
+        token: Arc<str>,
         url: &str,
     ) -> Result<TrafficDetailsResponse> {
         let resp = self

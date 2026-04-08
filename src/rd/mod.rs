@@ -70,11 +70,11 @@ impl RealDebrid {
 
         // Shared credentials — all three clients point at the same ArcSwap.
         let credentials = Arc::new(ArcSwap::from_pointee(Credentials {
-            token: Arc::new(cfg.token.clone()),
+            token: Arc::from(cfg.token.as_str()),
             download_tokens: cfg
                 .all_download_tokens()
                 .into_iter()
-                .map(Arc::new)
+                .map(Arc::from)
                 .collect(),
         }));
 
@@ -163,17 +163,17 @@ impl RealDebrid {
     /// Safe to call from the config-watcher task; all three clients see the new
     /// credentials on their very next `execute()` loop iteration.
     pub fn reload_credentials(&self, new_cfg: &Config) {
-        let arc_tokens: Vec<Arc<String>> = new_cfg
+        let arc_tokens: Vec<Arc<str>> = new_cfg
             .all_download_tokens()
             .into_iter()
-            .map(Arc::new)
+            .map(Arc::from)
             .collect();
         let new_creds = Credentials {
-            token: Arc::new(new_cfg.token.clone()),
+            token: Arc::from(new_cfg.token.as_str()),
             download_tokens: arc_tokens.clone(),
         };
         self.credentials.store(Arc::new(new_creds));
-        self.token_pool.update_tokens(arc_tokens);
+        self.token_pool.update_tokens(new_cfg.all_download_tokens());
         tracing::info!("RD credentials hot-reloaded (token rotated, pool refreshed)");
     }
 }
