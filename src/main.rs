@@ -258,6 +258,22 @@ async fn run_fuse_mount() -> Result<()> {
         });
     }
 
+    {
+        let rd_td = rd_client.clone();
+        let config_td = config.clone();
+        tokio::spawn(async move {
+            loop {
+                let secs = config_td.load().api.traffic_details_refresh_secs;
+                if secs == 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    continue;
+                }
+                rd_td.refresh_traffic_details_snapshot().await;
+                tokio::time::sleep(std::time::Duration::from_secs(secs.max(1))).await;
+            }
+        });
+    }
+
     let mut mount_options = fuse3::MountOptions::default();
     mount_options
         .allow_other(true)
