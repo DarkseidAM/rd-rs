@@ -30,7 +30,11 @@ impl RealDebrid {
     /// Returns `Some(String)` if the URL was rewritten, otherwise `None` (use the original URL).
     pub(crate) fn rewrite_download_url(&self, url: &str, use_fallback: bool) -> Option<String> {
         if !use_fallback && let Some(pin) = &*self.ranked_hosts.load() {
-            pin.rewrite_url(url)
+            pin.rewrite_url(
+                url,
+                self.config.api.cdn_mode,
+                self.config.api.cdn_location.as_deref(),
+            )
         } else {
             None
         }

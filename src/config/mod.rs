@@ -9,6 +9,7 @@ mod defaults;
 mod load;
 mod structs;
 
+pub use structs::CdnMode;
 pub use structs::{ApiConfig, Config, OnLibraryUpdateConfig, RepairConfig, VfsConfig};
 
 /// Parse a human-readable byte-size string (e.g. `"100G"`, `"128M"`, `"4K"`) into bytes.
