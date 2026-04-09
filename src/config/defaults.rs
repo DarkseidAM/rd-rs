@@ -23,6 +23,9 @@ pub(super) fn default_head_check_min_interval_mins() -> u64 {
 pub(super) fn default_repair_batch_file_group_size() -> u32 {
     5
 }
+pub(super) fn default_fuse_repair_wait_secs() -> u64 {
+    28
+}
 pub(super) fn default_rate_limit() -> u32 {
     250
 }

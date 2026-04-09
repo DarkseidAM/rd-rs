@@ -78,6 +78,12 @@ pub struct RepairConfig {
     /// Max number of file IDs per Strategy 4 `select_torrent_files` batch (clamped 1–32).
     #[serde(default = "defaults::default_repair_batch_file_group_size")]
     pub batch_file_group_size: u32,
+
+    /// Seconds to block a FUSE read() waiting for in-flight repair to complete.
+    /// 0 = disabled (return ENOENT immediately, legacy behavior).
+    /// Default: 28 (just under typical HTTP stream client timeouts of 30 s).
+    #[serde(default = "defaults::default_fuse_repair_wait_secs")]
+    pub fuse_repair_wait_secs: u64,
 }
 
 impl Default for RepairConfig {
@@ -93,6 +99,7 @@ impl Default for RepairConfig {
             head_unreachable_threshold: 1,
             head_check_min_interval_mins: 30,
             batch_file_group_size: 5,
+            fuse_repair_wait_secs: 28,
         }
     }
 }
