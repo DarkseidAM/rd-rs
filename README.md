@@ -4,6 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Edition](https://img.shields.io/badge/edition-2024-lightgrey.svg)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 [![Platforms](https://img.shields.io/badge/platform-linux%20amd64%20%7C%20arm64-informational.svg)](#building-from-source)
+[![GitHub release](https://img.shields.io/github/v/release/DarkseidAM/rd-rs.svg?label=release)](https://github.com/DarkseidAM/rd-rs/releases/latest)
 
 `rd-rs` is a high-performance, asynchronous FUSE filesystem server for **Real-Debrid**, written in Rust. It is a complete rewrite of [zurg](https://github.com/debridmediamanager/zurg-testing), offering improved memory safety, better concurrency, and a lower resource footprint.
 
@@ -84,7 +85,7 @@ The Docker image is a multi-stage build that produces a minimal Debian-slim runt
        volumes:
          - ./config.toml:/app/config.toml:ro
          - rd-cache:/data/cache
-         - ./mnt:/mnt/rd
+         - ./mnt:/mnt/rd:rshared
        restart: unless-stopped
 
    volumes:
@@ -271,7 +272,7 @@ rd-rs
 
 Key design choices:
 
-- **Unprivileged FUSE via `fuse3`** — bridges OS filesystem calls directly to Real-Debrid API endpoints without requiring a kernel module.
+- **Userspace FUSE via `fuse3`** — bridges OS filesystem calls directly to Real-Debrid API endpoints without requiring a custom kernel filesystem driver. The standard `fuse` kernel module and `/dev/fuse` device are still required (hence the `devices:` entry in the compose file).
 - **WAL-mode SQLite** — all persistent state (torrent records, byte-range maps, repair history) lives in a single portable database file.
 - **`arc-swap` + `dashmap`** — hot-reload and concurrent reads of configuration and torrent state without locking the entire map.
 - **`tokio`-native I/O** — all HTTP, disk, and FUSE operations run on the same async runtime with no thread-pool bridges.
