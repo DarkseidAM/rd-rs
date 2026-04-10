@@ -8,7 +8,7 @@
 //! ## `file_states` concurrency
 //!
 //! All mutations to [`ManagedTorrent::file_states`] go through `TorrentManager` (`mark_file_broken`,
-//! `persist_torrent_snapshot`, refresh merge, repair preflight). We do not model zurg’s per-file
+//! `persist_torrent_snapshot`, refresh merge, repair preflight). We do not model zurg's per-file
 //! FSM mutex graph; a single writer discipline keeps FUSE, refresh, and repair consistent.
 
 mod fuse_read_coalesce;
@@ -131,8 +131,12 @@ pub struct TorrentManager {
 
     pub(crate) repair_queue: Arc<Mutex<VecDeque<String>>>,
 
-    /// One in-flight “fatal read → mark broken + enqueue repair” handler per `(access_key, file_path)`.
+    /// One in-flight "fatal read → mark broken + enqueue repair" handler per `(access_key, file_path)`.
     pub(crate) fuse_fatal_read_locks: Arc<Mutex<HashSet<(String, String)>>>,
+
+    /// Per-torrent watch channel — fires on every state change.
+    /// FUSE repair-waiters subscribe here instead of polling.
+    pub(crate) repair_state_tx: DashMap<String, Arc<tokio::sync::watch::Sender<TorrentState>>>,
 }
 
 impl TorrentManager {
@@ -151,6 +155,7 @@ impl TorrentManager {
         let repair_notify = Arc::new(Notify::new());
         let repair_queue = Arc::new(Mutex::new(VecDeque::new()));
         let fuse_fatal_read_locks = Arc::new(Mutex::new(HashSet::new()));
+        let repair_state_tx = DashMap::new();
 
         let mgr = Self {
             torrents,
@@ -164,6 +169,7 @@ impl TorrentManager {
             repair_notify,
             repair_queue,
             fuse_fatal_read_locks,
+            repair_state_tx,
         };
 
         // Warm from SQLite before first RD sync (< 1s for 20K rows)
@@ -276,6 +282,34 @@ impl TorrentManager {
 
     pub fn cancel_token(&self) -> CancellationToken {
         self.shutdown.clone()
+    }
+
+    /// Subscribe to state changes for a torrent.
+    /// Returns a Receiver initialised with its current state.
+    /// Creates the sender lazily if not yet present.
+    pub fn subscribe_repair_state(
+        &self,
+        access_key: &str,
+    ) -> tokio::sync::watch::Receiver<TorrentState> {
+        let current = self
+            .torrents
+            .get(access_key)
+            .map(|m| m.state.clone())
+            .unwrap_or(TorrentState::Broken);
+
+        let tx = self
+            .repair_state_tx
+            .entry(access_key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::watch::channel(current).0))
+            .value()
+            .clone();
+
+        // Re-sync with latest state to close race condition window between initial get and channel creation.
+        if let Some(m) = self.torrents.get(access_key) {
+            let _ = tx.send(m.state.clone());
+        }
+
+        tx.subscribe()
     }
 
     /// Load `TorrentInfo` for this key if missing (FUSE / repair).

@@ -3,5 +3,11 @@ token = "YOUR_REAL_DEBRID_TOKEN"
 mount_path = "/mnt/rd"
 cache_dir = "/data/cache"
 
+[repair]
+# Seconds to block a FUSE read() waiting for in-flight repair to complete.
+# 0 = disabled (return ENOENT immediately, legacy behavior).
+# Default: 28 (just under typical HTTP stream client timeouts of 30 s).
+fuse_repair_wait_secs = 28
+
 [vfs]
 max_parallel_streams = 8

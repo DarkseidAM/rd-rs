@@ -137,6 +137,11 @@ impl TorrentManager {
             .map_err(|e| anyhow::anyhow!("DB update error: {}", e))?;
 
             self.trigger_library_update(self.library_paths_for(&updated));
+
+            // Unblock any FUSE repair-waiters on this torrent.
+            if let Some(tx) = self.repair_state_tx.get(access_key) {
+                let _ = tx.send(new_state.clone());
+            }
         }
         Ok(())
     }
