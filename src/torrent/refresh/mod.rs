@@ -235,6 +235,7 @@ async fn run_once(mgr: &TorrentManager) -> anyhow::Result<()> {
         }
         changed_paths.push(format!("__all__/{}", key));
         mgr.torrents.remove(key);
+        mgr.repair_state_tx.remove(key);
     }
 
     if !to_upsert.is_empty() {

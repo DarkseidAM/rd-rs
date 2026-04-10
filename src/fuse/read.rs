@@ -43,8 +43,16 @@ async fn wait_for_repair_ok(
             result = rx.changed()  => {
                 match result {
                     Err(_) => return false,
-                    Ok(()) if *rx.borrow() == crate::db::TorrentState::Ok => return true,
-                    Ok(()) => continue,
+                    Ok(()) => {
+                        let state = rx.borrow().clone();
+                        if state == crate::db::TorrentState::Ok {
+                            return true;
+                        }
+                        if state == crate::db::TorrentState::Broken {
+                            return false;
+                        }
+                        continue;
+                    }
                 }
             }
         }
@@ -241,29 +249,43 @@ pub async fn read(
                         let tm = fs.torrent_manager.clone();
                         let ak = access_key.clone();
                         let file_path = file.path.clone();
-                        if !tm.fuse_begin_fatal_read_repair(&ak, &file_path).await {
-                            return Err(Errno::from(libc::ENOENT));
-                        }
-                        async {
-                            if let Err(err) = tm
-                                .update_torrent_state(&ak, crate::db::TorrentState::Broken, None)
-                                .await
-                            {
-                                tracing::error!(
-                                    "Failed to set Broken after fatal unrestrict for {}: {}",
-                                    ak,
-                                    err
-                                );
-                            }
-                            let _ = tm.mark_file_broken(&ak, &file_path).await;
-                            tm.enqueue_repair(ak.clone()).await;
-                        }
-                        .await;
-                        tm.fuse_end_fatal_read_repair(&ak, &file_path).await;
+                        let is_repair_leader =
+                            tm.fuse_begin_fatal_read_repair(&ak, &file_path).await;
 
-                        if !repair_waited && wait_secs > 0 {
+                        let rx = if !repair_waited && wait_secs > 0 {
+                            Some(fs.torrent_manager.subscribe_repair_state(&access_key))
+                        } else {
+                            None
+                        };
+
+                        if is_repair_leader {
+                            async {
+                                if let Err(err) = tm
+                                    .update_torrent_state(
+                                        &ak,
+                                        crate::db::TorrentState::Broken,
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(
+                                        "Failed to set Broken after fatal unrestrict for {}: {}",
+                                        ak,
+                                        err
+                                    );
+                                }
+                                let _ = tm.mark_file_broken(&ak, &file_path).await;
+                                tm.enqueue_repair(ak.clone()).await;
+                            }
+                            .await;
+                            tm.fuse_end_fatal_read_repair(&ak, &file_path).await;
+                        }
+
+                        if !repair_waited
+                            && wait_secs > 0
+                            && let Some(mut rx) = rx
+                        {
                             repair_waited = true;
-                            let mut rx = fs.torrent_manager.subscribe_repair_state(&access_key);
                             tracing::info!(
                                 "fuse: fatal unrestrict — waiting {wait_secs}s for repair"
                             );
@@ -309,29 +331,38 @@ pub async fn read(
                 let tm = fs.torrent_manager.clone();
                 let ak = access_key.clone();
                 let file_path = file.path.clone();
-                if !tm.fuse_begin_fatal_read_repair(&ak, &file_path).await {
-                    return Err(Errno::from(libc::ENOENT));
-                }
-                async {
-                    if let Err(e) = tm
-                        .update_torrent_state(&ak, crate::db::TorrentState::Broken, None)
-                        .await
-                    {
-                        tracing::error!(
-                            "Failed to set Broken after corrupted link for {}: {}",
-                            ak,
-                            e
-                        );
-                    }
-                    let _ = tm.mark_file_broken(&ak, &file_path).await;
-                    tm.enqueue_repair(ak.clone()).await;
-                }
-                .await;
-                tm.fuse_end_fatal_read_repair(&ak, &file_path).await;
+                let is_repair_leader = tm.fuse_begin_fatal_read_repair(&ak, &file_path).await;
 
-                if !repair_waited && wait_secs > 0 {
+                let rx = if !repair_waited && wait_secs > 0 {
+                    Some(fs.torrent_manager.subscribe_repair_state(&access_key))
+                } else {
+                    None
+                };
+
+                if is_repair_leader {
+                    async {
+                        if let Err(e) = tm
+                            .update_torrent_state(&ak, crate::db::TorrentState::Broken, None)
+                            .await
+                        {
+                            tracing::error!(
+                                "Failed to set Broken after corrupted link for {}: {}",
+                                ak,
+                                e
+                            );
+                        }
+                        let _ = tm.mark_file_broken(&ak, &file_path).await;
+                        tm.enqueue_repair(ak.clone()).await;
+                    }
+                    .await;
+                    tm.fuse_end_fatal_read_repair(&ak, &file_path).await;
+                }
+
+                if !repair_waited
+                    && wait_secs > 0
+                    && let Some(mut rx) = rx
+                {
                     repair_waited = true;
-                    let mut rx = fs.torrent_manager.subscribe_repair_state(&access_key);
                     tracing::info!("fuse: corrupted link — waiting {wait_secs}s for repair");
                     if wait_for_repair_ok(&mut rx, Duration::from_secs(wait_secs), &fuse_ctx).await
                     {
