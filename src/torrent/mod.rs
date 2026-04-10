@@ -291,23 +291,18 @@ impl TorrentManager {
         &self,
         access_key: &str,
     ) -> tokio::sync::watch::Receiver<TorrentState> {
+        let current = self
+            .torrents
+            .get(access_key)
+            .map(|m| m.state.clone())
+            .unwrap_or(TorrentState::Broken);
+
         let tx = self
             .repair_state_tx
             .entry(access_key.to_string())
-            .or_insert_with(|| {
-                let current = self
-                    .torrents
-                    .get(access_key)
-                    .map(|m| m.state.clone())
-                    .unwrap_or(TorrentState::Broken);
-                Arc::new(tokio::sync::watch::channel(current).0)
-            })
+            .or_insert_with(|| Arc::new(tokio::sync::watch::channel(current).0))
             .value()
             .clone();
-
-        if let Some(m) = self.torrents.get(access_key) {
-            let _ = tx.send(m.state.clone());
-        }
 
         tx.subscribe()
     }

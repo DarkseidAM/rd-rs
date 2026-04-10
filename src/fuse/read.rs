@@ -44,12 +44,8 @@ async fn wait_for_repair_ok(
                 match result {
                     Err(_) => return false,
                     Ok(()) => {
-                        let state = rx.borrow().clone();
-                        if state == crate::db::TorrentState::Ok {
+                        if rx.borrow().clone() == crate::db::TorrentState::Ok {
                             return true;
-                        }
-                        if state == crate::db::TorrentState::Broken {
-                            return false;
                         }
                         continue;
                     }
