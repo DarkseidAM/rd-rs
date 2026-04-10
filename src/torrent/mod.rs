@@ -304,6 +304,11 @@ impl TorrentManager {
             .value()
             .clone();
 
+        // Re-sync with latest state to close race condition window between initial get and channel creation.
+        if let Some(m) = self.torrents.get(access_key) {
+            let _ = tx.send(m.state.clone());
+        }
+
         tx.subscribe()
     }
 
