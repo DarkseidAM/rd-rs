@@ -1,8 +1,7 @@
-# FUSE in Docker needs elevated privileges; adjust paths and use a real token in config.toml.
 services:
   rd-rs:
-    build: .
-    image: rd-rs:local
+    image: ghcr.io/darkseidam/rd-rs:latest
+    container_name: rd-rs
     cap_add:
       - SYS_ADMIN
     devices:
@@ -11,8 +10,12 @@ services:
       - apparmor:unconfined
     volumes:
       - ./config.toml:/app/config.toml:ro
-      - rd-cache:/data/cache
-      - ./mnt:/mnt/rd
+      - rd-cache:/cache/zurg-vfs
+      - type: bind
+        source: /mnt/test
+        target: /mnt/test
+        bind:
+          propagation: rshared
     restart: unless-stopped
 
 volumes:
