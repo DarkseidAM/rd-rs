@@ -315,18 +315,34 @@ async fn run_fuse_mount() -> Result<()> {
     }
 
     tracing::info!("Mounting FUSE filesystem at {}...", mount_path.display());
-    let umount_res = tokio::process::Command::new("fusermount3")
-        .arg("-uz")
-        .arg(&mount_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
+    // Only attempt to eagerly unmount if it's actually an existing FUSE mount.
+    // Unconditionally running fusermount3 -uz on a path can detach Docker's bind mounts!
+    let path_str = mount_path.to_str().unwrap_or("");
+    let is_fuse_mount = std::fs::read_to_string("/proc/self/mountinfo")
+        .map(|s| {
+            s.lines()
+                .any(|l| l.contains(path_str) && l.contains("fuse"))
+        })
+        .unwrap_or(false);
 
-    if let Ok(st) = umount_res
-        && st.success()
-    {
-        tracing::info!("Successfully unmounted stale FUSE directory");
+    if is_fuse_mount {
+        tracing::info!(
+            "Found existing FUSE mount at {}, attempting to unmount...",
+            path_str
+        );
+        let umount_res = tokio::process::Command::new("fusermount3")
+            .arg("-uz")
+            .arg(&mount_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+
+        if let Ok(st) = umount_res
+            && st.success()
+        {
+            tracing::info!("Successfully unmounted stale FUSE directory");
+        }
     }
 
     let cache_dir = config.load().cache_dir.clone();
