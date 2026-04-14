@@ -318,12 +318,27 @@ async fn run_fuse_mount() -> Result<()> {
     // Only attempt to eagerly unmount if it's actually an existing FUSE mount.
     // Unconditionally running fusermount3 -uz on a path can detach Docker's bind mounts!
     let path_str = mount_path.to_str().unwrap_or("");
-    let is_fuse_mount = std::fs::read_to_string("/proc/self/mountinfo")
-        .map(|s| {
-            s.lines()
-                .any(|l| l.contains(path_str) && l.contains("fuse"))
-        })
-        .unwrap_or(false);
+    let is_fuse_mount = if !path_str.is_empty() {
+        std::fs::read_to_string("/proc/self/mountinfo")
+            .map(|s| {
+                s.lines().any(|line| {
+                    let parts: Vec<&str> = line.splitn(2, " - ").collect();
+                    if parts.len() == 2 {
+                        let pre_parts: Vec<&str> = parts[0].split_whitespace().collect();
+                        if pre_parts.len() >= 5 {
+                            // mountinfo escapes spaces as \040
+                            let mount_point = pre_parts[4].replace("\\040", " ");
+                            let fs_type = parts[1].split_whitespace().next().unwrap_or("");
+                            return mount_point == path_str && fs_type.starts_with("fuse");
+                        }
+                    }
+                    false
+                })
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
 
     if is_fuse_mount {
         tracing::info!(
