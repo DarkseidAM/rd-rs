@@ -303,9 +303,6 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                     offset = %format!("{} ({})", chunk_start, o_mb),
                                     "chunk downloaded successfully"
                                 );
-                                let _ = mult.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |m| {
-                                    Some((m * 2).min(16u32))
-                                });
                                 break; // Done with this retry loop
                             }
                             Some(e) => {

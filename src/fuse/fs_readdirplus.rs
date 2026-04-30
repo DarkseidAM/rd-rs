@@ -94,6 +94,7 @@ pub(super) async fn readdirplus<'a>(
                             let mut a = fs.dir_attr(inode);
                             a.mtime = mtime;
                             a.atime = mtime;
+                            a.ctime = mtime;
                             a
                         },
                         entry_ttl: fs.entry_ttl,
@@ -124,6 +125,7 @@ pub(super) async fn readdirplus<'a>(
                         let mut a = fs.dir_attr(i);
                         a.mtime = mtime;
                         a.atime = mtime;
+                        a.ctime = mtime;
                         a
                     },
                     entry_ttl: fs.entry_ttl,
