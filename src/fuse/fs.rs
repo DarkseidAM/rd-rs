@@ -53,12 +53,12 @@ pub struct RdFs {
     pub config: Arc<ArcSwap<Config>>,
     pub cache: Arc<Cache>,
     pub(crate) unrestrict_cache: UnrestrictCache,
-    pub(crate) key_to_inode: DashMap<String, u64>,
-    pub(crate) inode_to_key: DashMap<u64, String>,
+    pub(crate) key_to_inode: Arc<DashMap<String, u64>>,
+    pub(crate) inode_to_key: Arc<DashMap<u64, String>>,
     pub(crate) next_torrent_inode: AtomicU64,
     pub(crate) cached_all_dir: CachedAllDir,
     /// Throttle `warn!` when reads skip a file marked `broken` in `file_states` (otherwise silent at `info`).
-    pub(crate) broken_read_warn_ts: DashMap<String, Instant>,
+    pub(crate) broken_read_warn_ts: Arc<DashMap<String, Instant>>,
     /// Next FUSE file handle for regular files (`>= 1`; `0` = no per-fd buffer).
     pub(crate) next_fh: AtomicU64,
     /// Per-`fh` read-ahead buffer for file opens (see `vfs_read_buffer`).
@@ -88,20 +88,78 @@ impl RdFs {
             config,
             cache,
             unrestrict_cache,
-            key_to_inode: DashMap::new(),
-            inode_to_key: DashMap::new(),
+            key_to_inode: Arc::new(DashMap::new()),
+            inode_to_key: Arc::new(DashMap::new()),
             next_torrent_inode: AtomicU64::new(INODE_TORRENT_BASE),
             cached_all_dir: std::sync::RwLock::new((
                 std::time::Instant::now() - Duration::from_secs(600),
                 Arc::new(Vec::new()),
             )),
-            broken_read_warn_ts: DashMap::new(),
+            broken_read_warn_ts: Arc::new(DashMap::new()),
             next_fh: AtomicU64::new(1),
             open_files: DashMap::new(),
             pending_fuse_reads: Arc::new(DashMap::new()),
             attr_ttl: Duration::from_secs(vfs.attr_timeout_secs),
             entry_ttl: Duration::from_secs(vfs.entry_timeout_secs),
         }
+    }
+
+    /// Spawn a background task that cleans up inode-map and `broken_read_warn_ts` entries
+    /// whenever a torrent is removed by the refresh loop.  Also runs a periodic sweep to
+    /// purge warn-ts entries older than one hour.
+    ///
+    /// Call this once after [`RdFs::new`] and before passing `fs` to `mount()`.
+    pub fn spawn_cleanup_task(&self) {
+        use std::time::{Duration, Instant};
+        let mut removed_rx = self.torrent_manager.subscribe_torrent_removed();
+        let shutdown_tok = self.torrent_manager.cancel_token();
+        // Arc::clone shares the same DashMap allocation — the task operates on the
+        // live maps, not a deep copy.
+        let inode_to_key = Arc::clone(&self.inode_to_key);
+        let key_to_inode = Arc::clone(&self.key_to_inode);
+        let broken_warn_ts = Arc::clone(&self.broken_read_warn_ts);
+        tokio::spawn(async move {
+            let sweep_interval = Duration::from_secs(10 * 60);
+            let warn_ttl = Duration::from_secs(3600);
+            let mut next_sweep = Instant::now() + sweep_interval;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown_tok.cancelled() => {
+                        tracing::debug!("inode cleanup task: shutting down");
+                        return;
+                    }
+                    result = removed_rx.recv() => {
+                        match result {
+                            Ok(access_key) => {
+                                if let Some((_, inode)) = key_to_inode.remove(&access_key) {
+                                    inode_to_key.remove(&inode);
+                                }
+                                let prefix = format!("{access_key}\x1f");
+                                broken_warn_ts.retain(|k, _| !k.starts_with(&prefix));
+                                tracing::debug!(key = %access_key, "inode cleanup: purged removed torrent");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(
+                                    "inode cleanup: lagged by {n} removal events; \
+                                     inode maps may hold stale entries until next sweep"
+                                );
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                tracing::debug!("inode cleanup task: channel closed, exiting");
+                                return;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep_until(next_sweep.into()) => {
+                        let now = Instant::now();
+                        broken_warn_ts.retain(|_, ts| now.duration_since(*ts) < warn_ttl);
+                        next_sweep = now + sweep_interval;
+                        tracing::debug!("inode cleanup: periodic warn-ts sweep done");
+                    }
+                }
+            }
+        });
     }
 }
 

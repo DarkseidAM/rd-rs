@@ -40,7 +40,7 @@ pub struct RealDebrid {
     pub connection_semaphore: Arc<tokio::sync::Semaphore>,
     /// Round-robin token pool for the download client; rotated on bandwidth limit responses.
     pub token_pool: Arc<TokenPool>,
-    pub config: Arc<Config>,
+    pub config: Arc<ArcSwap<Config>>,
     pub ranked_hosts: Arc<arc_swap::ArcSwapOption<cdn::RankedHosts>>,
     /// Latest per-token `GET /traffic/details` snapshot when refresh is enabled in config.
     pub traffic_details: Arc<arc_swap::ArcSwapOption<TrafficDetailsSnapshot>>,
@@ -150,7 +150,7 @@ impl RealDebrid {
             torrents_rate_limiter: torrents_rl,
             connection_semaphore,
             token_pool,
-            config: Arc::new(cfg.clone()),
+            config: Arc::new(ArcSwap::from_pointee(cfg.clone())),
             ranked_hosts: Arc::new(arc_swap::ArcSwapOption::new(None)),
             traffic_details: Arc::new(arc_swap::ArcSwapOption::new(None)),
             credentials,
@@ -175,5 +175,13 @@ impl RealDebrid {
         self.credentials.store(Arc::new(new_creds));
         self.token_pool.update_tokens(arc_tokens);
         tracing::info!("RD credentials hot-reloaded (token rotated, pool refreshed)");
+    }
+
+    /// Atomically update the shared config snapshot so that `api.*`, `cdn_mode`,
+    /// `bandwidth_reset_timezone`, and other fields are picked up by the next caller
+    /// that does `self.config.load()`.
+    pub fn reload_config(&self, new_cfg: Config) {
+        self.config.store(Arc::new(new_cfg));
+        tracing::debug!("RD config snapshot hot-reloaded");
     }
 }

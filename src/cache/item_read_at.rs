@@ -89,6 +89,10 @@ pub(crate) async fn read_at(
                             // 5s Adaptive Kicker: Existing worker is stalling or too far behind.
                             tracing::warn!("fuse read blocked > 5s at {offset}; kicking priority downloader");
 
+                            // Cancel the stalled session before spawning a replacement to prevent
+                            // both workers from competing to write the same byte range (double-download).
+                            session.cancel();
+
                             let (handle, new_session) = spawn_worker(
                                 item, offset, end, fetch_until, base_chunk, read_ahead, max_parallel_streams,
                                 download, rd, unrestrict_cache, pause_rx.clone()

@@ -159,10 +159,20 @@ impl RdClient {
                 if let Ok(err_body) = serde_json::from_slice::<ApiErrBody>(&body) {
                     let api_err = ApiError::from_code(err_body.code, err_body.error);
                     if api_err.is_bandwidth_limited() {
+                        // TrafficExhausted (23) / FairUsageLimit (36): no point retrying this
+                        // token — daily quota is exhausted. Return immediately so the caller
+                        // can skip to the next token or surface the error.
                         return Err(RdError::Api(api_err));
                     }
                     if api_err.should_retry() {
-                        let delay = backoff(attempt, 1);
+                        // Distinguish back-off duration by error class:
+                        //   RateLimit (5, 34, 429) → short exponential (base=1s)
+                        //   Internal  (-1)          → longer base (30s)
+                        let base_secs: u64 = match &api_err {
+                            ApiError::Internal { .. } => 30,
+                            _ => 1,
+                        };
+                        let delay = backoff(attempt, base_secs);
                         tracing::warn!(
                             attempt,
                             code = err_body.code,

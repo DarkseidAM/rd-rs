@@ -33,13 +33,19 @@ pub(super) fn evict(cache: &Cache) {
         .collect();
 
     for key in &to_remove {
-        if let Some((_, item)) = cache.items.remove(key) {
-            // Avoid removing entries that were concurrently acquired and opened after we built
-            // `to_remove` (open() happens in get_or_create()).
+        // Use entry API to make the open-check + remove atomic under the shard lock,
+        // eliminating the race window where get_or_create() can see a missing entry
+        // and create a duplicate CacheItem.
+        let mut flushed: Option<std::sync::Arc<super::item::CacheItem>> = None;
+        cache.items.remove_if(key, |_k, item| {
             if item.is_open() {
-                cache.items.insert(key.clone(), item);
-                continue;
+                false // keep in map
+            } else {
+                flushed = Some(std::sync::Arc::clone(item));
+                true // remove
             }
+        });
+        if let Some(item) = flushed {
             item.flush_ranges(true);
         }
     }

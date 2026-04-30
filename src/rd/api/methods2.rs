@@ -19,8 +19,9 @@ impl RealDebrid {
         link: &str,
     ) -> Result<Download, RdError> {
         let mut form_body = format!("link={}", urlencoding_encode(link));
-        if self.config.api.cdn_mode == crate::config::CdnMode::ForceLocation
-            && let Some(loc) = self.config.api.cdn_location.as_deref()
+        let cfg = self.config.load();
+        if cfg.api.cdn_mode == crate::config::CdnMode::ForceLocation
+            && let Some(loc) = cfg.api.cdn_location.as_deref()
             && let Some(pin) = &*self.ranked_hosts.load()
             && let Some(ip) = pin.geo_unrestrict_ip(loc, link)
         {
@@ -29,8 +30,9 @@ impl RealDebrid {
         }
         let url = format!(
             "{}/rest/1.0/unrestrict/link",
-            self.config.api.base_url.trim_end_matches('/')
+            cfg.api.base_url.trim_end_matches('/')
         );
+        drop(cfg);
 
         let mut last_bandwidth: Option<RdError> = None;
 
@@ -84,7 +86,7 @@ impl RealDebrid {
     pub async fn select_torrent_files(&self, id: &str, files: &str) -> Result<(), RdError> {
         let url = format!(
             "{}/rest/1.0/torrents/selectFiles/{id}",
-            self.config.api.base_url.trim_end_matches('/')
+            self.config.load().api.base_url.trim_end_matches('/')
         );
         let body = format!("files={files}");
         self.api_client
@@ -102,7 +104,7 @@ impl RealDebrid {
     pub async fn delete_torrent(&self, id: &str) -> Result<(), RdError> {
         let url = format!(
             "{}/rest/1.0/torrents/delete/{id}",
-            self.config.api.base_url.trim_end_matches('/')
+            self.config.load().api.base_url.trim_end_matches('/')
         );
         self.api_client
             .execute(|_| self.api_client.client.delete(&url))
@@ -114,7 +116,7 @@ impl RealDebrid {
         let body = format!("magnet=magnet%3A%3Fxt%3Durn%3Abtih%3A{hash}");
         let url = format!(
             "{}/rest/1.0/torrents/addMagnet",
-            self.config.api.base_url.trim_end_matches('/')
+            self.config.load().api.base_url.trim_end_matches('/')
         );
         let resp = self
             .api_client
@@ -133,7 +135,7 @@ impl RealDebrid {
     pub async fn get_active_count(&self) -> Result<ActiveTorrentCountResponse> {
         let url = format!(
             "{}/rest/1.0/torrents/activeCount",
-            self.config.api.base_url.trim_end_matches('/')
+            self.config.load().api.base_url.trim_end_matches('/')
         );
         let resp = self
             .api_client
@@ -148,7 +150,7 @@ impl RealDebrid {
     pub async fn get_traffic_details(&self) -> Result<TrafficDetailsResponse> {
         let url = format!(
             "{}/rest/1.0/traffic/details",
-            self.config.api.base_url.trim_end_matches('/')
+            self.config.load().api.base_url.trim_end_matches('/')
         );
         let resp = self
             .api_client
@@ -162,7 +164,7 @@ impl RealDebrid {
     pub async fn get_downloads(&self, page: u32, limit: u32) -> Result<Vec<DownloadItem>> {
         let url = format!(
             "{}/rest/1.0/downloads?page={}&limit={}",
-            self.config.api.base_url.trim_end_matches('/'),
+            self.config.load().api.base_url.trim_end_matches('/'),
             page,
             limit
         );
@@ -176,7 +178,7 @@ impl RealDebrid {
     }
 
     pub async fn verify_link(&self, url: &str) -> Result<()> {
-        if self.config.api.use_range_verification {
+        if self.config.load().api.use_range_verification {
             self.verify_range(url).await
         } else {
             self.verify_head(url).await
@@ -189,7 +191,7 @@ impl RealDebrid {
             .acquire()
             .await
             .context("verify_head: connection semaphore closed")?;
-        let api_to = Duration::from_secs(self.config.api.timeout_secs.max(1));
+        let api_to = Duration::from_secs(self.config.load().api.timeout_secs.max(1));
         let resp = self
             .download_client
             .execute(|use_fallback| {
@@ -215,7 +217,7 @@ impl RealDebrid {
             .acquire()
             .await
             .context("verify_range: connection semaphore closed")?;
-        let api_to = Duration::from_secs(self.config.api.timeout_secs.max(1));
+        let api_to = Duration::from_secs(self.config.load().api.timeout_secs.max(1));
         let resp = self
             .download_client
             .execute(|use_fallback| {
