@@ -162,11 +162,6 @@ impl RealDebrid {
     ///
     /// Safe to call from the config-watcher task; all three clients see the new
     /// credentials on their very next `execute()` loop iteration.
-    /// Hot-swaps the RD credentials (token + download tokens) without disrupting
-    /// any HTTP connections, semaphores, or CDN state.
-    ///
-    /// Safe to call from the config-watcher task; all three clients see the new
-    /// credentials on their very next `execute()` loop iteration.
     pub fn reload_credentials(&self, new_cfg: &Config) {
         let arc_tokens: Vec<Arc<str>> = new_cfg
             .all_download_tokens()

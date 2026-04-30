@@ -1,6 +1,6 @@
 [package]
 name = "rd-rs"
-version = "1.1.1"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.94"
 description = "Rust rewrite of zurg — Real-Debrid FUSE filesystem server"
@@ -20,7 +20,12 @@ tokio-util = "0.7"
 
 # HTTP client
 # reqwest 0.13: rustls feature (not rustls-tls), default-tls disabled, http2 kept
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "rustls",
+    "stream",
+    "http2",
+] }
 
 # FUSE filesystem (patched: readdirplus buffer check includes padding to avoid EIO on large dirs)
 fuse3 = { version = "0.9", features = ["tokio-runtime", "unprivileged"] }

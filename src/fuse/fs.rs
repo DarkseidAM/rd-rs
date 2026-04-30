@@ -53,12 +53,12 @@ pub struct RdFs {
     pub config: Arc<ArcSwap<Config>>,
     pub cache: Arc<Cache>,
     pub(crate) unrestrict_cache: UnrestrictCache,
-    pub(crate) key_to_inode: DashMap<String, u64>,
-    pub(crate) inode_to_key: DashMap<u64, String>,
+    pub(crate) key_to_inode: Arc<DashMap<String, u64>>,
+    pub(crate) inode_to_key: Arc<DashMap<u64, String>>,
     pub(crate) next_torrent_inode: AtomicU64,
     pub(crate) cached_all_dir: CachedAllDir,
     /// Throttle `warn!` when reads skip a file marked `broken` in `file_states` (otherwise silent at `info`).
-    pub(crate) broken_read_warn_ts: DashMap<String, Instant>,
+    pub(crate) broken_read_warn_ts: Arc<DashMap<String, Instant>>,
     /// Next FUSE file handle for regular files (`>= 1`; `0` = no per-fd buffer).
     pub(crate) next_fh: AtomicU64,
     /// Per-`fh` read-ahead buffer for file opens (see `vfs_read_buffer`).
@@ -88,14 +88,14 @@ impl RdFs {
             config,
             cache,
             unrestrict_cache,
-            key_to_inode: DashMap::new(),
-            inode_to_key: DashMap::new(),
+            key_to_inode: Arc::new(DashMap::new()),
+            inode_to_key: Arc::new(DashMap::new()),
             next_torrent_inode: AtomicU64::new(INODE_TORRENT_BASE),
             cached_all_dir: std::sync::RwLock::new((
                 std::time::Instant::now() - Duration::from_secs(600),
                 Arc::new(Vec::new()),
             )),
-            broken_read_warn_ts: DashMap::new(),
+            broken_read_warn_ts: Arc::new(DashMap::new()),
             next_fh: AtomicU64::new(1),
             open_files: DashMap::new(),
             pending_fuse_reads: Arc::new(DashMap::new()),
@@ -113,10 +113,11 @@ impl RdFs {
         use std::time::{Duration, Instant};
         let mut removed_rx = self.torrent_manager.subscribe_torrent_removed();
         let shutdown_tok = self.torrent_manager.cancel_token();
-        // Clone the DashMaps so the task can own them independently of the FUSE session.
-        let inode_to_key = self.inode_to_key.clone();
-        let key_to_inode = self.key_to_inode.clone();
-        let broken_warn_ts = self.broken_read_warn_ts.clone();
+        // Arc::clone shares the same DashMap allocation — the task operates on the
+        // live maps, not a deep copy.
+        let inode_to_key = Arc::clone(&self.inode_to_key);
+        let key_to_inode = Arc::clone(&self.key_to_inode);
+        let broken_warn_ts = Arc::clone(&self.broken_read_warn_ts);
         tokio::spawn(async move {
             let sweep_interval = Duration::from_secs(10 * 60);
             let warn_ttl = Duration::from_secs(3600);
