@@ -12,6 +12,9 @@ use super::errors::{ApiError, DownloadError, RdError};
 use super::rate_limit::{RateLimiter, backoff};
 use crate::rd::token_pool::TokenPool;
 
+const RETRY_BACKOFF_INTERNAL_SECS: u64 = 30;
+const RETRY_BACKOFF_DEFAULT_SECS: u64 = 1;
+
 pub struct RdClientConfig {
     /// Shared, hot-swappable credentials (token + download token list).
     pub credentials: Arc<ArcSwap<Credentials>>,
@@ -169,8 +172,8 @@ impl RdClient {
                         //   RateLimit (5, 34, 429) → short exponential (base=1s)
                         //   Internal  (-1)          → longer base (30s)
                         let base_secs: u64 = match &api_err {
-                            ApiError::Internal { .. } => 30,
-                            _ => 1,
+                            ApiError::Internal { .. } => RETRY_BACKOFF_INTERNAL_SECS,
+                            _ => RETRY_BACKOFF_DEFAULT_SECS,
                         };
                         let delay = backoff(attempt, base_secs);
                         tracing::warn!(

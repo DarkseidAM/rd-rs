@@ -120,7 +120,7 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                     let mut q = queue_clone.lock();
                     if let Some((slice_start, slice_end)) = q.pop_front() {
                         let multiplier = mult.load(Ordering::Relaxed);
-                        let chunk_size = (base_chunk * u64::from(multiplier)).min(slice_end - slice_start);
+                        let chunk_size = base_chunk.saturating_mul(u64::from(multiplier)).min(slice_end - slice_start);
                         let chunk_end = slice_start + chunk_size;
                         if chunk_end < slice_end {
                             q.push_front((chunk_end, slice_end));
