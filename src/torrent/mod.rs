@@ -137,6 +137,10 @@ pub struct TorrentManager {
     /// Per-torrent watch channel — fires on every state change.
     /// FUSE repair-waiters subscribe here instead of polling.
     pub(crate) repair_state_tx: DashMap<String, Arc<tokio::sync::watch::Sender<TorrentState>>>,
+
+    /// Broadcast channel that fires the access_key of each torrent that is removed during
+    /// refresh. RdFs subscribes to clean up inode maps and `broken_read_warn_ts`.
+    pub(crate) torrent_removed_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 impl TorrentManager {
@@ -156,6 +160,7 @@ impl TorrentManager {
         let repair_queue = Arc::new(Mutex::new(VecDeque::new()));
         let fuse_fatal_read_locks = Arc::new(Mutex::new(HashSet::new()));
         let repair_state_tx = DashMap::new();
+        let (torrent_removed_tx, _) = tokio::sync::broadcast::channel(256);
 
         let mgr = Self {
             torrents,
@@ -170,6 +175,7 @@ impl TorrentManager {
             repair_queue,
             fuse_fatal_read_locks,
             repair_state_tx,
+            torrent_removed_tx,
         };
 
         // Warm from SQLite before first RD sync (< 1s for 20K rows)
@@ -365,6 +371,17 @@ impl TorrentManager {
         }
         drop(q);
         self.repair_notify.notify_one();
+    }
+
+    /// Publish a removal event so that subscribers (e.g. RdFs inode maps) can clean up.
+    pub(crate) fn notify_torrent_removed(&self, access_key: &str) {
+        // Ignore send errors — no subscribers is fine (e.g., during startup repair CLI).
+        let _ = self.torrent_removed_tx.send(access_key.to_string());
+    }
+
+    /// Subscribe to torrent-removed events. Used by RdFs to clean up inode maps.
+    pub fn subscribe_torrent_removed(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.torrent_removed_tx.subscribe()
     }
 
     // ─── Shutdown ─────────────────────────────────────────────────────────────

@@ -103,6 +103,63 @@ impl RdFs {
             entry_ttl: Duration::from_secs(vfs.entry_timeout_secs),
         }
     }
+
+    /// Spawn a background task that cleans up inode-map and `broken_read_warn_ts` entries
+    /// whenever a torrent is removed by the refresh loop.  Also runs a periodic sweep to
+    /// purge warn-ts entries older than one hour.
+    ///
+    /// Call this once after [`RdFs::new`] and before passing `fs` to `mount()`.
+    pub fn spawn_cleanup_task(&self) {
+        use std::time::{Duration, Instant};
+        let mut removed_rx = self.torrent_manager.subscribe_torrent_removed();
+        let shutdown_tok = self.torrent_manager.cancel_token();
+        // Clone the DashMaps so the task can own them independently of the FUSE session.
+        let inode_to_key = self.inode_to_key.clone();
+        let key_to_inode = self.key_to_inode.clone();
+        let broken_warn_ts = self.broken_read_warn_ts.clone();
+        tokio::spawn(async move {
+            let sweep_interval = Duration::from_secs(10 * 60);
+            let warn_ttl = Duration::from_secs(3600);
+            let mut next_sweep = Instant::now() + sweep_interval;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown_tok.cancelled() => {
+                        tracing::debug!("inode cleanup task: shutting down");
+                        return;
+                    }
+                    result = removed_rx.recv() => {
+                        match result {
+                            Ok(access_key) => {
+                                if let Some((_, inode)) = key_to_inode.remove(&access_key) {
+                                    inode_to_key.remove(&inode);
+                                }
+                                let prefix = format!("{access_key}\x1f");
+                                broken_warn_ts.retain(|k, _| !k.starts_with(&prefix));
+                                tracing::debug!(key = %access_key, "inode cleanup: purged removed torrent");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(
+                                    "inode cleanup: lagged by {n} removal events; \
+                                     inode maps may hold stale entries until next sweep"
+                                );
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                tracing::debug!("inode cleanup task: channel closed, exiting");
+                                return;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep_until(next_sweep.into()) => {
+                        let now = Instant::now();
+                        broken_warn_ts.retain(|_, ts| now.duration_since(*ts) < warn_ttl);
+                        next_sweep = now + sweep_interval;
+                        tracing::debug!("inode cleanup: periodic warn-ts sweep done");
+                    }
+                }
+            }
+        });
+    }
 }
 
 // ─── PathFilesystem impl ──────────────────────────────────────────────────────

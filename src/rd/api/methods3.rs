@@ -30,11 +30,8 @@ impl RealDebrid {
     /// Returns `Some(String)` if the URL was rewritten, otherwise `None` (use the original URL).
     pub(crate) fn rewrite_download_url(&self, url: &str, use_fallback: bool) -> Option<String> {
         if !use_fallback && let Some(pin) = &*self.ranked_hosts.load() {
-            pin.rewrite_url(
-                url,
-                self.config.api.cdn_mode,
-                self.config.api.cdn_location.as_deref(),
-            )
+            let cfg = self.config.load();
+            pin.rewrite_url(url, cfg.api.cdn_mode, cfg.api.cdn_location.as_deref())
         } else {
             None
         }
@@ -45,8 +42,10 @@ impl RealDebrid {
         url: &str,
         range: &str,
     ) -> Result<reqwest::Response, RdError> {
-        let max_retries = self.config.api.retries_until_failed;
-        let read_to = Duration::from_secs(self.config.api.download_read_timeout_secs.max(1));
+        let cfg = self.config.load();
+        let max_retries = cfg.api.retries_until_failed;
+        let read_to = Duration::from_secs(cfg.api.download_read_timeout_secs.max(1));
+        drop(cfg);
         let mut attempt: u32 = 0;
         loop {
             let resp = self

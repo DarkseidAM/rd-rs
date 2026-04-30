@@ -236,6 +236,8 @@ async fn run_once(mgr: &TorrentManager) -> anyhow::Result<()> {
         changed_paths.push(format!("__all__/{}", key));
         mgr.torrents.remove(key);
         mgr.repair_state_tx.remove(key);
+        // Notify FUSE layer to purge inode maps and broken_read_warn_ts for this key.
+        mgr.notify_torrent_removed(key);
     }
 
     if !to_upsert.is_empty() {

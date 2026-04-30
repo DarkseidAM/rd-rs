@@ -50,6 +50,20 @@ impl DownloadSession {
     pub(crate) fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
+
+    /// Immediately cancel this session's downloader task without waiting for all
+    /// waiter guards to drop. Used by the kicker to stop a stalled session before
+    /// spawning a priority replacement.
+    pub(crate) fn cancel(&self) {
+        self.cancel.cancel();
+        let mut g = self
+            .abort
+            .lock()
+            .expect("download session abort mutex poisoned");
+        if let Some(h) = g.take() {
+            h.abort();
+        }
+    }
 }
 
 /// RAII waiter counter; last drop cancels + aborts the session.

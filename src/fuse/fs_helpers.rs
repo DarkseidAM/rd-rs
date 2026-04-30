@@ -55,11 +55,43 @@ impl RdFs {
 
     pub(crate) fn get_or_assign_torrent_inode(&self, key: &str) -> u64 {
         let key = key.to_string();
-        *self.key_to_inode.entry(key.clone()).or_insert_with(|| {
-            let inode = self.next_torrent_inode.fetch_add(1, Ordering::Relaxed);
-            self.inode_to_key.insert(inode, key);
-            inode
-        })
+        let (inode, is_new) = {
+            let mut is_new = false;
+            let inode = *self.key_to_inode.entry(key.clone()).or_insert_with(|| {
+                is_new = true;
+                let inode = self.next_torrent_inode.fetch_add(1, Ordering::Relaxed);
+                self.inode_to_key.insert(inode, key);
+                inode
+            });
+            (inode, is_new)
+        };
+        if is_new {
+            // A new torrent just got an inode — invalidate the dir listing cache.
+            self.invalidate_cached_all_dir();
+        }
+        inode
+    }
+
+    /// Force-expire the `cached_all_dir` cache so the next `readdir` rebuilds it.
+    /// Called on torrent add, remove, or rename.
+    pub(crate) fn invalidate_cached_all_dir(&self) {
+        if let Ok(mut cache) = self.cached_all_dir.write() {
+            cache.0 = std::time::Instant::now() - Duration::from_secs(600);
+        }
+    }
+
+    /// Remove inode-map entries for a torrent that was deleted during refresh.
+    /// Also purges `broken_read_warn_ts` entries keyed by this access key.
+    #[allow(dead_code)]
+    pub(crate) fn purge_torrent_inode(&self, access_key: &str) {
+        if let Some((_, inode)) = self.key_to_inode.remove(access_key) {
+            self.inode_to_key.remove(&inode);
+        }
+        // Purge warn-ts entries for this torrent (keyed as "<access_key>\x1f<path>").
+        let prefix = format!("{access_key}\x1f");
+        self.broken_read_warn_ts
+            .retain(|k, _| !k.starts_with(&prefix));
+        self.invalidate_cached_all_dir();
     }
 
     pub(crate) fn inode_to_access_key(&self, inode: u64) -> Option<String> {

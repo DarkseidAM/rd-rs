@@ -162,6 +162,7 @@ async fn run_fuse_mount() -> Result<()> {
                         || old_cfg.download_tokens != updated.download_tokens;
 
                     rd_clone.reload_credentials(&updated);
+                    rd_clone.reload_config(updated.clone());
                     if tokens_changed {
                         tracing::info!(
                             "RD API tokens changed during hot-reload; dropping unrestrict cache"
@@ -208,14 +209,25 @@ async fn run_fuse_mount() -> Result<()> {
         let rd_probe = rd_client.clone();
         let config_probe = config.clone();
         let probe_inflight = Arc::new(tokio::sync::Mutex::new(()));
+        let shutdown_probe = torrent_mgr.cancel_token();
         tokio::spawn(async move {
             loop {
                 let mins = config_probe.load().api.cdn_reprobe_interval_mins;
+                let sleep_dur = if mins == 0 {
+                    std::time::Duration::from_secs(60)
+                } else {
+                    std::time::Duration::from_secs(mins.saturating_mul(60))
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(sleep_dur) => {}
+                    _ = shutdown_probe.cancelled() => {
+                        tracing::info!("CDN reprobe loop: shutting down");
+                        return;
+                    }
+                }
                 if mins == 0 {
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     continue;
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(mins.saturating_mul(60))).await;
                 let _guard = match probe_inflight.try_lock() {
                     Ok(g) => g,
                     Err(_) => {
@@ -241,6 +253,7 @@ async fn run_fuse_mount() -> Result<()> {
         let rd_bw = rd_client.clone();
         let config_bw = config.clone();
         let cache_dir_bw = config_bw.load().cache_dir.clone();
+        let shutdown_bw = torrent_mgr.cancel_token();
         tokio::spawn(async move {
             loop {
                 let cfg = config_bw.load();
@@ -257,7 +270,13 @@ async fn run_fuse_mount() -> Result<()> {
                 }
 
                 let sleep_dur = rd_rs::rd::bandwidth_reset::duration_until_timezone_midnight(&tz);
-                tokio::time::sleep(sleep_dur).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(sleep_dur) => {}
+                    _ = shutdown_bw.cancelled() => {
+                        tracing::info!("bandwidth reset loop: shutting down");
+                        return;
+                    }
+                }
                 rd_bw.token_pool.clear_all_exhausted();
                 rd_rs::rd::bandwidth_reset::stamp_reset(&cache_dir_bw, &tz);
             }
@@ -267,14 +286,25 @@ async fn run_fuse_mount() -> Result<()> {
     {
         let cache_sweep = unrestrict_cache_sweep;
         let config_sweep = config.clone();
+        let shutdown_sweep = torrent_mgr.cancel_token();
         tokio::spawn(async move {
             loop {
                 let mins = config_sweep.load().api.unrestrict_cache_sweep_interval_mins;
+                let sleep_dur = if mins == 0 {
+                    std::time::Duration::from_secs(60)
+                } else {
+                    std::time::Duration::from_secs(mins.saturating_mul(60))
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(sleep_dur) => {}
+                    _ = shutdown_sweep.cancelled() => {
+                        tracing::info!("unrestrict cache sweep loop: shutting down");
+                        return;
+                    }
+                }
                 if mins == 0 {
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     continue;
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(mins.saturating_mul(60))).await;
                 let removed = sweep_unrestrict_cache_expired(&cache_sweep, UNRESTRICT_CACHE_TTL);
                 if removed > 0 {
                     tracing::info!(removed, "unrestrict cache sweep dropped stale entries");
@@ -286,15 +316,28 @@ async fn run_fuse_mount() -> Result<()> {
     {
         let rd_td = rd_client.clone();
         let config_td = config.clone();
+        let shutdown_td = torrent_mgr.cancel_token();
         tokio::spawn(async move {
             loop {
                 let secs = config_td.load().api.traffic_details_refresh_secs;
                 if secs == 0 {
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                        _ = shutdown_td.cancelled() => {
+                            tracing::info!("traffic details loop: shutting down");
+                            return;
+                        }
+                    }
                     continue;
                 }
                 rd_td.refresh_traffic_details_snapshot().await;
-                tokio::time::sleep(std::time::Duration::from_secs(secs.max(1))).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(secs.max(1))) => {}
+                    _ = shutdown_td.cancelled() => {
+                        tracing::info!("traffic details loop: shutting down");
+                        return;
+                    }
+                }
             }
         });
     }
@@ -366,6 +409,10 @@ async fn run_fuse_mount() -> Result<()> {
         rd_rs::cache::Cache::new(&cache_dir, std::sync::Arc::new(config.load().vfs.clone()));
 
     let fs = RdFs::new(torrent_mgr.clone(), rd_client, config, cache);
+
+    // Spawn inode-map and warn-ts cleanup task (encapsulated in RdFs).
+    fs.spawn_cleanup_task();
+
     let mut mount_handle = Session::new(mount_options).mount(fs, &mount_path).await?;
 
     tokio::select! {

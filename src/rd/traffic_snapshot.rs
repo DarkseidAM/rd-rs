@@ -12,7 +12,13 @@ impl RealDebrid {
     /// Fetches `/traffic/details` once per token in the pool and stores the result in
     /// [`Self::traffic_details`]. Failed tokens are skipped with a warning.
     pub async fn refresh_traffic_details_snapshot(&self) {
-        let base = self.config.api.base_url.trim_end_matches('/');
+        let base = self
+            .config
+            .load()
+            .api
+            .base_url
+            .trim_end_matches('/')
+            .to_string();
         let url = format!("{base}/rest/1.0/traffic/details");
         let tokens = self.token_pool.tokens_in_order();
         let mut by_token = Vec::with_capacity(tokens.len());

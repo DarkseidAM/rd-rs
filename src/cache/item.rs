@@ -98,12 +98,19 @@ impl CacheItem {
                     "cache open: restored ranges from cache_ranges.db"
                 );
             } else {
+                // Size changed: truncate the sparse file to the new size and purge
+                // the stale DB ranges so the new-size key starts from a clean slate.
                 tracing::warn!(
                     key = %cache_key,
                     db_file_size = row.file_size,
                     expected = file_size,
-                    "cache open: range db file_size mismatch; ignoring persisted ranges"
+                    "cache open: range db file_size mismatch; truncating file and purging persisted ranges"
                 );
+                file.set_len(file_size)
+                    .with_context(|| format!("truncate on size mismatch {:?}", path))?;
+                if let Err(e) = range_db.delete_keys(&[cache_key.as_str()]) {
+                    tracing::warn!(key = %cache_key, "cache: failed to purge stale ranges on mismatch: {e:#}");
+                }
             }
         }
         let now_secs = std::time::SystemTime::now()
