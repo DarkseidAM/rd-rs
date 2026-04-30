@@ -55,7 +55,7 @@ impl RdFs {
 
     pub(crate) fn get_or_assign_torrent_inode(&self, key: &str) -> u64 {
         let key = key.to_string();
-        let (inode, is_new) = {
+        let (inode, _is_new) = {
             let mut is_new = false;
             let inode = *self.key_to_inode.entry(key.clone()).or_insert_with(|| {
                 is_new = true;
@@ -65,10 +65,6 @@ impl RdFs {
             });
             (inode, is_new)
         };
-        if is_new {
-            // A new torrent just got an inode — invalidate the dir listing cache.
-            self.invalidate_cached_all_dir();
-        }
         inode
     }
 

@@ -41,6 +41,7 @@ pub(super) async fn lookup(
                             let mut a = fs.dir_attr(inode);
                             a.mtime = mtime;
                             a.atime = mtime;
+                            a.ctime = mtime;
                             a
                         },
                         generation: 0,
@@ -93,6 +94,7 @@ pub(super) async fn getattr(
             let mut a = fs.dir_attr(i);
             a.mtime = mtime;
             a.atime = mtime;
+            a.ctime = mtime;
             a
         }
 
