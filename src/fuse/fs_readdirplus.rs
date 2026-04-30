@@ -81,15 +81,21 @@ pub(super) async fn readdirplus<'a>(
             let start_idx = (offset.max(2) - 2) as usize;
             for (i, (key, unique_name)) in keys.iter().skip(start_idx).take(1000).enumerate() {
                 let index = start_idx + i;
-                if fs.torrents.get(key).is_some() {
+                if let Some(mt) = fs.torrents.get(key) {
                     let inode = fs.get_or_assign_torrent_inode(key);
+                    let mtime = RdFs::torrent_mtime(&mt);
                     entries.push(DirectoryEntryPlus {
                         inode,
                         generation: 0,
                         kind: FileType::Directory,
                         name: unique_name.clone(),
                         offset: (index + 3) as i64,
-                        attr: fs.dir_attr(inode),
+                        attr: {
+                            let mut a = fs.dir_attr(inode);
+                            a.mtime = mtime;
+                            a.atime = mtime;
+                            a
+                        },
                         entry_ttl: fs.entry_ttl,
                         attr_ttl: fs.attr_ttl,
                     });

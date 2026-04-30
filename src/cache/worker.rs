@@ -254,34 +254,36 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                         let mut download_error = None;
                         let mut current_pos = chunk_start;
 
+                        let mut stall_timeout = Box::pin(tokio::time::sleep(NO_PROGRESS_TIMEOUT));
+
                         loop {
-                            // Per-chunk body read with individual timeout to detect body stalls.
-                            let chunk_res = tokio::select! {
+                            // Per-chunk body read with an idle timeout to detect body stalls.
+                            tokio::select! {
                                 biased;
                                 _ = cancel.cancelled() => return Ok::<(), anyhow::Error>(()),
-                                res = tokio::time::timeout(NO_PROGRESS_TIMEOUT, resp.chunk()) => res,
-                            };
-
-                            match chunk_res {
-                                Err(_elapsed) => {
+                                _ = &mut stall_timeout => {
                                     let secs = no_progress_timeout_secs();
-                                    download_error = Some(anyhow::anyhow!(
-                                        "stream body stalled for {secs}s"
-                                    ));
+                                    download_error = Some(anyhow::anyhow!("stream body stalled for {secs}s"));
                                     break;
                                 }
-                                Ok(Ok(Some(data))) => {
-                                    if let Err(e) = item_clone.write_range(current_pos, &data[..]) {
-                                        download_error = Some(e);
-                                        break;
+                                res = resp.chunk() => {
+                                    match res {
+                                        Ok(Some(data)) => {
+                                            if let Err(e) = item_clone.write_range(current_pos, &data[..]) {
+                                                download_error = Some(e);
+                                                break;
+                                            }
+                                            current_pos += data.len() as u64;
+                                            chunk_bytes_downloaded += data.len() as u64;
+                                            // Reset the timeout since we made progress
+                                            stall_timeout.as_mut().reset(tokio::time::Instant::now() + NO_PROGRESS_TIMEOUT);
+                                        }
+                                        Ok(None) => break, // Success, EOF for this chunk
+                                        Err(e) => {
+                                            download_error = Some(anyhow::anyhow!("HTTP chunk error: {e:#}"));
+                                            break;
+                                        }
                                     }
-                                    current_pos += data.len() as u64;
-                                    chunk_bytes_downloaded += data.len() as u64;
-                                }
-                                Ok(Ok(None)) => break, // Success, EOF for this chunk
-                                Ok(Err(e)) => {
-                                    download_error = Some(anyhow::anyhow!("HTTP chunk error: {e:#}"));
-                                    break;
                                 }
                             }
                         }
@@ -301,6 +303,9 @@ pub(crate) async fn run_downloader(item: &Arc<CacheItem>, args: DownloaderArgs) 
                                     offset = %format!("{} ({})", chunk_start, o_mb),
                                     "chunk downloaded successfully"
                                 );
+                                let _ = mult.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |m| {
+                                    Some((m * 2).min(16u32))
+                                });
                                 break; // Done with this retry loop
                             }
                             Some(e) => {
