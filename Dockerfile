@@ -1,7 +1,7 @@
 # Multi-stage build for rd-rs (Real-Debrid FUSE server)
 
 # Use BUILDPLATFORM so the builder runs natively (avoiding QEMU slow down)
-FROM --platform=$BUILDPLATFORM rust:1.94-slim AS builder
+FROM --platform=$BUILDPLATFORM rust:1.98-slim AS builder
 
 WORKDIR /build
 
