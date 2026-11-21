@@ -39,7 +39,7 @@ notify = "8"
 # Concurrency
 dashmap = "6"
 arc-swap = "1.8"
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 # Storage
 # Pinned to 0.37 to match tokio-rusqlite 0.7's dep (avoids libsqlite3-sys version conflict)
